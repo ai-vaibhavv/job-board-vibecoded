@@ -99,6 +99,51 @@ sources:
       country: Germany
 
   # -------------------------------------------------------------------------
+  # TU Berlin — Stellenticket, the university's official job portal.
+  #
+  # status: VERIFIED live 2026-07-16. `/en/job-offers.atom` is a real Atom feed:
+  #         HTTP 200, application/atom+xml, 308 entries, no account needed.
+  #         Rich `<summary>` per entry (full German advert text, not a snippet)
+  #         and real `<published>` dates — 80 of the 308 were within 7 days.
+  #         robots.txt is empty, so nothing is disallowed.
+  #
+  # DO NOT ADD A SECOND STELLENTICKET INSTANCE. It looks like free coverage and
+  # is a trap. Stellenticket is one shared pool that each university serves under
+  # its own hostname, so the SAME vacancy appears at every instance:
+  #
+  #     tag:stellenticket.tu-berlin.de,2023:Vacancy/205402
+  #     tag:stellenticket.fu-berlin.de,2023:Vacancy/205402   <- the same job
+  #
+  # The URLs differ only by host, so `normalize_url` cannot collapse them and the
+  # dedup never fires — every shared job would be announced twice. Measured
+  # against fu-berlin: 140 shared, 168 only on TU, 84 only on FU.
+  #
+  # Canonicalising by vacancy id was the obvious fix and does not work: an
+  # FU-only vacancy fetched from the TU host returns HTTP 410, so a single
+  # canonical host would put dead links in Discord. One instance it is, and TU
+  # has the larger pool.
+  #
+  # A quirk worth knowing before you "fix" it: every entry carries TWO
+  # <published> elements, which is malformed Atom. The first sits in the
+  # canonical position after <id> and is the real posting date; the second sits
+  # after <title> at exactly 00:00:01 and looks like a listing/bump marker. The
+  # parser takes the first, correctly — measured, taking the second instead would
+  # add just 9 jobs, all of them posted more than a week ago and merely bumped
+  # since, which `max_age_days` is supposed to drop.
+  #
+  # The feed is the whole university: architecture and administration arrive
+  # alongside informatics. Keyword scoring is what narrows it. `namespace=science`
+  # does NOT filter the .atom endpoint — it returns all 308 either way.
+  # -------------------------------------------------------------------------
+  - name: tu_berlin_stellenticket
+    type: rss
+    enabled: true
+    url: "https://stellenticket.tu-berlin.de/en/job-offers.atom"
+    defaults:
+      organization: "TU Berlin"
+      country: Germany
+
+  # -------------------------------------------------------------------------
   # EURAXESS — the EU research-jobs portal, run by the European Commission.
   # robots.txt permits the job paths.
   #
