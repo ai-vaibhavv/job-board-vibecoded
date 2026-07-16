@@ -144,6 +144,36 @@ _MIGRATIONS: list[str] = [
     """
     ALTER TABLE jobs ADD COLUMN card_summary TEXT;
     """,
+    # v6 — dashboard side tables: on-demand English translations, and soft-hide.
+    #
+    # Both are side tables, not columns on `jobs`, and deliberately so. A column
+    # would ride the hot `upsert` ON-CONFLICT path, where a normal pipeline run
+    # (which knows nothing about translations or hiding) would overwrite it with
+    # NULL on every re-discovery. A referencing table with ON DELETE CASCADE keeps
+    # `upsert`, the `Job` model and `_row_to_job` untouched — same discipline as
+    # `job_assessments`.
+    #
+    # `job_translations` is keyed on content_hash like the assessment cache, so an
+    # edited posting is re-translated rather than served a stale translation.
+    # `job_hidden` records a soft-hide: the row stays in `jobs` with its REJECTED
+    # status and its cached verdict, so a hidden job is still deduplicated and
+    # never re-fetched or re-judged. Deleting the row instead would make it
+    # re-appear and re-cost LLM quota on the next run.
+    """
+    CREATE TABLE IF NOT EXISTS job_translations (
+        job_id          TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash    TEXT NOT NULL,
+        description_en  TEXT NOT NULL,
+        card_summary_en TEXT,
+        truncated       INTEGER NOT NULL DEFAULT 0,
+        translated_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS job_hidden (
+        job_id     TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        hidden_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -499,6 +529,85 @@ class Database:
                     _dt(when or datetime.now(UTC)),
                 ),
             )
+
+    # -- translation cache ------------------------------------------------
+
+    def get_translation(self, job_id: str, content_hash: str) -> dict | None:
+        """A cached English translation, if one was made for *this* posting text.
+
+        Keyed on `content_hash` like the assessment cache: an edited posting
+        (new hash) is re-translated rather than served the old translation.
+        Returns a dict with `description_en`, `card_summary_en`, `truncated`, or
+        None when nothing is cached for this text.
+        """
+        row = self._conn.execute(
+            """
+            SELECT description_en, card_summary_en, truncated FROM job_translations
+            WHERE job_id = ? AND content_hash = ?
+            """,
+            (job_id, content_hash),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "description_en": row["description_en"],
+            "card_summary_en": row["card_summary_en"],
+            "truncated": bool(row["truncated"]),
+        }
+
+    def save_translation(
+        self,
+        job_id: str,
+        content_hash: str,
+        description_en: str,
+        card_summary_en: str | None = None,
+        truncated: bool = False,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_translations
+                    (job_id, content_hash, description_en, card_summary_en,
+                     truncated, translated_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hash    = excluded.content_hash,
+                    description_en  = excluded.description_en,
+                    card_summary_en = excluded.card_summary_en,
+                    truncated       = excluded.truncated,
+                    translated_at   = excluded.translated_at
+                """,
+                (
+                    job_id,
+                    content_hash,
+                    description_en,
+                    card_summary_en,
+                    1 if truncated else 0,
+                    _dt(when or datetime.now(UTC)),
+                ),
+            )
+
+    # -- soft-hide --------------------------------------------------------
+
+    def hide_job(self, job_id: str, when: datetime | None = None) -> None:
+        """Mark a job hidden from the dashboard. The `jobs` row is untouched, so
+        the job keeps its status and cached verdict and is never re-fetched."""
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_hidden (job_id, hidden_at) VALUES (?, ?)
+                ON CONFLICT(job_id) DO NOTHING
+                """,
+                (job_id, _dt(when or datetime.now(UTC))),
+            )
+
+    def unhide_job(self, job_id: str) -> None:
+        with self._tx() as conn:
+            conn.execute("DELETE FROM job_hidden WHERE job_id = ?", (job_id,))
+
+    def hidden_ids(self) -> set[str]:
+        return {r[0] for r in self._conn.execute("SELECT job_id FROM job_hidden")}
 
     def record_run(self, started_at: datetime, finished_at: datetime, summary_json: str) -> None:
         with self._tx() as conn:

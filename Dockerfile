@@ -14,7 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN python -m venv /opt/venv && /opt/venv/bin/pip install --upgrade pip && /opt/venv/bin/pip install .
+# The [dashboard] extra pulls in gradio + pypdf so the web UI ships in the image.
+RUN python -m venv /opt/venv && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install ".[dashboard]"
 
 
 FROM python:3.12-slim AS runtime
@@ -34,7 +36,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Europe/Berlin \
-    JOB_ALERTS_DATABASE_PATH=/data/jobs.db
+    JOB_ALERTS_DATABASE_PATH=/data/jobs.db \
+    # Keep every cache/temp the dashboard stack (gradio, huggingface_hub,
+    # matplotlib) might write inside /tmp, which is a writable tmpfs even when the
+    # container root filesystem is read-only. HOME is set for the same reason.
+    HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    GRADIO_TEMP_DIR=/tmp/gradio \
+    GRADIO_ANALYTICS_ENABLED=False \
+    HF_HOME=/tmp/hf \
+    MPLCONFIGDIR=/tmp/mpl
 
 WORKDIR /app
 COPY config/ ./config/
@@ -46,11 +57,18 @@ VOLUME ["/data"]
 
 USER alerts
 
-# Fails if the package or its config cannot load.
+# The dashboard listens here; compose maps it to the host.
+EXPOSE 7860
+
+# Fails if the package or its config cannot load. Deliberately generic: the same
+# image serves the dashboard AND the scheduler, and this must pass during the
+# "waiting for the LLM endpoint" phase before the web server is even up.
 HEALTHCHECK --interval=5m --timeout=10s --start-period=5s --retries=2 \
     CMD python -c "import job_alerts; import sys; sys.exit(0)" || exit 1
 
-# Default: stay running and search on schedule. Override for a one-off:
+# Default: wait for the self-hosted LLM to come online, then serve the dashboard.
+# Override for the scheduler or a one-off:
+#   docker run ... germany-research-job-alerts run-scheduler
 #   docker run --rm ... germany-research-job-alerts search --dry-run
 ENTRYPOINT ["python", "-m", "job_alerts"]
-CMD ["run-scheduler"]
+CMD ["dashboard", "--host", "0.0.0.0", "--wait-for-llm"]

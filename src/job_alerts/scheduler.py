@@ -24,6 +24,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .config import ProfileSettings, Secrets, Settings, SourcesConfig, load_profile
 from .database import Database
+from .models import RunSummary
 from .pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -87,14 +88,20 @@ async def run_once(
     dry_run: bool = False,
     use_lock: bool = True,
     profile: ProfileSettings | None = None,
-) -> None:
-    """One pipeline run, guarded by the lock."""
+) -> RunSummary:
+    """One pipeline run, guarded by the lock. Returns the run summary.
+
+    The summary is also printed for the CLI; callers that only want the side
+    effects (cmd_search, the scheduler tick) simply ignore the return value,
+    while the dashboard uses it to report real counts.
+    """
     profile = profile if profile is not None else load_profile(secrets=secrets)
     lock_ctx = run_lock(settings.scheduler.lock_file) if use_lock else _null_context()
     with lock_ctx, Database(settings.database.path) as db:
         pipeline = Pipeline(settings, sources_config, secrets, db, profile)
         summary = await pipeline.run(dry_run=dry_run)
         print(summary.render())
+        return summary
 
 
 @contextmanager

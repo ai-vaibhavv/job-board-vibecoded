@@ -1,22 +1,37 @@
 # Usage:
-#   cp .env.example .env && edit .env
+#   cp .env.example .env && edit .env            # DISCORD_WEBHOOK_URL etc.
 #   cp config/settings.example.yaml config/settings.yaml
 #   cp config/sources.example.yaml config/sources.yaml
+#   # put your Colab/vLLM tunnel URL in config/settings.yaml -> llm.colab_base_url
 #
-#   docker compose up -d                        # scheduler, searches at 08:00 and 18:00
-#   docker compose logs -f
-#   docker compose run --rm job-alerts search --dry-run    # one-off, sends nothing
-#   docker compose run --rm job-alerts send-test
-#   docker compose run --rm job-alerts stats
+#   docker compose up                            # dashboard on http://localhost:7860
+#                                                #   → waits for the LLM endpoint first
+#   docker compose up -d                         # same, in the background
+#   docker compose --profile scheduler up -d     # also run scheduled searches
+#   docker compose run --rm dashboard send-test  # one-off CLI command in the image
+#
+# On start the dashboard prints "Waiting for the LLM endpoint…" until your Colab
+# notebook / vLLM server is reachable, then launches. If the tunnel URL changed,
+# edit config/settings.yaml (it is picked up live — no restart needed).
 
 services:
-  job-alerts:
+  dashboard:
     build: .
     image: germany-research-job-alerts:latest
-    container_name: job-alerts
+    container_name: job-alerts-dashboard
     restart: unless-stopped
 
-    # Secrets come from .env at runtime; they are never baked into the image.
+    # Wait for the self-hosted LLM to come online, then serve the web UI.
+    command: ["dashboard", "--host", "0.0.0.0", "--wait-for-llm"]
+
+    # So `docker compose up` (attached) shows the "waiting…" prompt and Ctrl+C works.
+    stdin_open: true
+    tty: true
+
+    ports:
+      - "7860:7860"
+
+    # Secrets come from .env at runtime; never baked into the image.
     env_file:
       - .env
 
@@ -25,13 +40,48 @@ services:
       JOB_ALERTS_DATABASE_PATH: /data/jobs.db
 
     volumes:
-      # The database MUST persist: it is what remembers which jobs were already
-      # sent. Losing it means re-notifying everything.
+      # The database MUST persist: it remembers which jobs were already sent, and
+      # holds the translation/hidden state the dashboard writes.
       - jobs-data:/data
-      # Config is mounted read-only so it can be edited without a rebuild.
+      # Config is mounted read-only; the startup gate re-reads it each poll, so
+      # you can edit llm.colab_base_url without a rebuild or restart.
       - ./config:/app/config:ro
 
-    # Nothing here needs to write to the image filesystem.
+    # Gradio's temp/uploads and the HF/matplotlib caches (all routed to /tmp by
+    # the image's ENV) go to a RAM-backed tmpfs, so they never fill the Docker
+    # overlay disk. Only the persistent DB touches real disk (the named volume).
+    tmpfs:
+      - /tmp
+
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: scheduled searches at 08:00 / 18:00. Off by default so the paid
+  # Apify source is not run unattended. Enable with `--profile scheduler`.
+  scheduler:
+    build: .
+    image: germany-research-job-alerts:latest
+    container_name: job-alerts-scheduler
+    restart: unless-stopped
+    profiles: ["scheduler"]
+    command: ["run-scheduler"]
+
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Berlin
+      JOB_ALERTS_DATABASE_PATH: /data/jobs.db
+
+    volumes:
+      - jobs-data:/data
+      - ./config:/app/config:ro
+
     read_only: true
     tmpfs:
       - /tmp

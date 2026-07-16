@@ -91,6 +91,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("show-config", help="show effective configuration (secrets masked)")
 
+    dashboard = sub.add_parser(
+        "dashboard", help="launch the web dashboard (needs the 'dashboard' extra)"
+    )
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=7860)
+    dashboard.add_argument(
+        "--share", action="store_true", help="expose a public link (needs --auth)"
+    )
+    dashboard.add_argument("--auth", help="username:password required for --share")
+    dashboard.add_argument(
+        "--wait-for-llm",
+        action="store_true",
+        help="wait until the LLM endpoint is online before launching (used in Docker)",
+    )
+    dashboard.add_argument("--wait-interval", type=float, default=10.0)
+    dashboard.add_argument("--wait-timeout", type=float, default=0.0)
+
     return parser
 
 
@@ -325,6 +342,34 @@ def cmd_check_source(args: argparse.Namespace) -> int:
     return asyncio.run(_check())
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Launch the Gradio web dashboard.
+
+    Gradio is an optional dependency, imported lazily here so the core tool runs
+    without it. `pip install -e ".[dashboard]"` adds it.
+    """
+    try:
+        from .dashboard.app import main as dashboard_main
+    except ModuleNotFoundError as exc:
+        print(
+            "The dashboard needs the optional 'dashboard' extra.\n"
+            '  Install it with:  pip install -e ".[dashboard]"\n'
+            f"  (missing: {exc.name})",
+            file=sys.stderr,
+        )
+        return 4
+
+    argv = ["--host", args.host, "--port", str(args.port)]
+    if args.share:
+        argv.append("--share")
+    if args.auth:
+        argv += ["--auth", args.auth]
+    if args.wait_for_llm:
+        argv.append("--wait-for-llm")
+    argv += ["--wait-interval", str(args.wait_interval), "--wait-timeout", str(args.wait_timeout)]
+    return dashboard_main(argv)
+
+
 def cmd_show_config(args: argparse.Namespace) -> int:
     settings, sources, secrets = _load(args)
 
@@ -375,6 +420,7 @@ _COMMANDS = {
     "export": cmd_export,
     "check-source": cmd_check_source,
     "show-config": cmd_show_config,
+    "dashboard": cmd_dashboard,
 }
 
 
