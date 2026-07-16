@@ -1,0 +1,288 @@
+# ---------------------------------------------------------------------------
+# Job sources. Copy to config/sources.yaml and edit:
+#   cp config/sources.example.yaml config/sources.yaml
+#
+# Every entry supports:
+#   name     — unique id, also stored on each job as `source`
+#   type     — mock | rss | html | json_api | search_api
+#   enabled  — false entries are skipped entirely
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE ENABLING ANYTHING
+# ---------------------------------------------------------------------------
+# Entries are marked with a `status:` comment:
+#
+#   VERIFIED   — parsing was exercised against real fixtures/live responses and
+#                worked at build time. Websites still change without notice.
+#   UNVERIFIED — the URL and selectors are a *starting point that was not
+#                confirmed to parse*. They are guesses based on the site's
+#                general layout. Enable only after checking them yourself with:
+#                  python -m job_alerts check-source <name>
+#   FORBIDDEN  — the site's robots.txt or terms disallow automated access.
+#                Do not enable. Left here so you know it was considered.
+#
+# The application is useful with only the RSS and search_api sources enabled.
+# ---------------------------------------------------------------------------
+
+sources:
+  # -------------------------------------------------------------------------
+  # Offline demo source. Emits fixture jobs, makes no network calls.
+  # Handy for `--dry-run` and for proving the pipeline end to end.
+  # status: VERIFIED (it is local fixture data)
+  # -------------------------------------------------------------------------
+  - name: mock
+    type: mock
+    enabled: true
+
+  # -------------------------------------------------------------------------
+  # Fraunhofer — applied-research institutes, lots of HiWi / Werkstudent /
+  # Bachelor- und Masterarbeiten roles. Runs on SAP SuccessFactors, which
+  # serves plain server-rendered HTML.
+  #
+  # status: VERIFIED at build time (2026-07-15). The selectors below were
+  #         checked against a live response: `tr.data-row` matched 25 job rows
+  #         and every field below resolved. robots.txt disallows /applybutton/,
+  #         /talentcommunity/ and similar, but not /search/, which is all this
+  #         fetches.
+  #
+  # Websites change. If this ever returns 0 jobs the run logs a warning — then
+  # re-check with: python -m job_alerts check-source fraunhofer
+  #
+  # Tune the search by editing `q=` (the keyword) in the URL below.
+  # -------------------------------------------------------------------------
+  - name: fraunhofer
+    type: html
+    enabled: true
+    url: "https://jobs.fraunhofer.de/search/?q=studentische+hilfskraft&locationsearch=Deutschland"
+    selectors:
+      item: "tr.data-row"
+      title: "a.jobTitle-link"
+      url: "a.jobTitle-link@href"
+      location: "span.jobShifttype"
+      organization: "span.jobFacility"
+    defaults:
+      organization: "Fraunhofer-Gesellschaft"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # TU München — "Schwarzes Brett": the university's dedicated board for
+  # Studentische Hilfskräfte, Praktikantenstellen and Studienarbeiten. Plone,
+  # server-rendered, with a real RSS feed.
+  #
+  # status: VERIFIED live on 2026-07-16 — 80 items parsed, 80 candidates out.
+  #         Valid RSS 2.0, channel "Studentische Hilfskräfte,
+  #         Praktikantenstellen, Studienarbeiten", and — unlike every other
+  #         source here — REAL pubDates:
+  #             "Studentische Hilfskraft – RadioOnkologie und Strahlentherapie"
+  #             Wed, 15 Jul 2026 13:00:00 +0200
+  #         Descriptions are substantive, naming the chair, the weekly hours
+  #         ("9–20 hours per week") and the start date. The board rolls, so the
+  #         item count moves; it is not a fixed 80.
+  #
+  # Why this one matters more than it looks: every other source ships 0 dates
+  # (fraunhofer 0/25, search_discovery 0/100), and `search.max_age_days` cannot
+  # filter what has no date. This feed is what makes recency real.
+  #
+  # Most items are in German, and most of those do NOT require German — the
+  # board is for a university that teaches and researches in English. Do not
+  # filter this source by language.
+  #
+  # The feed is the whole board, not just CS: expect medicine, biology and
+  # management alongside informatics. Keyword scoring is what narrows it.
+  # -------------------------------------------------------------------------
+  - name: tum_hiwi
+    type: rss
+    enabled: true
+    url: "https://portal.mytum.de/schwarzesbrett/hiwi_stellen/asRss"
+    defaults:
+      organization: "TU München"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # EURAXESS — the EU research-jobs portal, run by the European Commission.
+  # robots.txt permits the job paths.
+  #
+  # status: UNVERIFIED — NO WORKING FEED URL IS KNOWN.
+  # Two plausible RSS endpoints were probed at build time and BOTH returned
+  # HTTP 404:
+  #     /jobs/search/field_country/germany-1136/rss.xml
+  #     /jobs/rss
+  # Rather than ship a URL that is known not to work, the field is left blank.
+  # To enable: find the real feed or API URL from the EURAXESS site, put it in
+  # `url`, then run `python -m job_alerts check-source euraxess_germany`.
+  # If EURAXESS serves JSON rather than RSS, switch `type` to `json_api` and
+  # add a `field_map` (see example_json_api at the bottom of this file).
+  # -------------------------------------------------------------------------
+  - name: euraxess_germany
+    type: rss
+    enabled: false
+    url: ""
+    defaults:
+      organization: "EURAXESS listing"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # Max Planck Society.
+  #
+  # status: UNVERIFIED — STATIC SCRAPING DOES NOT WORK HERE.
+  # The page was fetched at build time: it returns HTTP 200, but the job
+  # listings are rendered client-side by JavaScript. The only repeated markup
+  # in the served HTML is the filter checkboxes (`div.job-li.filter`), not the
+  # jobs — so any CSS selector for this page will parse 0 jobs.
+  #
+  # Reaching it would need a browser engine, which the spec disallows by
+  # default and this project deliberately does not implement. Better routes:
+  #   * the `search_discovery` source below already covers mpg.de via
+  #     `site:mpg.de job student assistant artificial intelligence`
+  #   * individual Max Planck institutes often have their own static job pages
+  #     or feeds — add those as separate `html`/`rss` entries.
+  # -------------------------------------------------------------------------
+  - name: max_planck
+    type: html
+    enabled: false
+    url: "https://www.mpg.de/jobboard"
+    selectors: {}
+    defaults:
+      organization: "Max Planck Society"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # academics.de
+  # status: FORBIDDEN — DO NOT ENABLE.
+  # Their robots.txt carries this notice (retrieved at build time):
+  #   "The use of robots or other automated means to access academics.de or
+  #    collect or mine data without the express permission of academics.de is
+  #    strictly prohibited."
+  # The spec forbids violating a site's terms, so this stays off. If you obtain
+  # written permission from academics.de, flip `enabled` and set your own
+  # selectors — the `html` adapter will handle it.
+  # -------------------------------------------------------------------------
+  - name: academics_de
+    type: html
+    enabled: false
+    forbidden: true
+    url: "https://www.academics.de/"
+    selectors: {}
+    defaults:
+      organization: "academics.de"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # DAAD — mostly scholarships rather than HiWi roles, but occasionally posts
+  # research positions. Permissive robots.txt for the job area.
+  # status: UNVERIFIED
+  # -------------------------------------------------------------------------
+  - name: daad
+    type: html
+    enabled: false
+    url: "https://www.daad.de/en/"
+    selectors:
+      item: "article"
+      title: "h3"
+      url: "a@href"
+    defaults:
+      organization: "DAAD"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # Generic university career feed. Many German universities publish RSS for
+  # their job boards. Copy this block per university.
+  # status: UNVERIFIED — replace `url` with a real feed you have checked.
+  # -------------------------------------------------------------------------
+  - name: example_university_rss
+    type: rss
+    enabled: false
+    url: "https://www.example-university.de/jobs/feed.xml"
+    defaults:
+      organization: "Example University"
+      country: Germany
+
+  # -------------------------------------------------------------------------
+  # Search-engine discovery. This is the compliant route to LinkedIn: it finds
+  # public job URLs via a search API and stores the links. It NEVER logs in to
+  # LinkedIn and never scrapes authenticated pages.
+  #
+  # Requires SEARCH_API_PROVIDER and SEARCH_API_KEY in `.env`. Without a key
+  # this source disables itself with a warning and the run continues.
+  # status: VERIFIED (adapter + all 4 providers covered by mocked tests;
+  #         live results depend on your API key and quota)
+  #
+  # ---- READ THIS BEFORE EDITING THE QUERIES ----
+  # `site:` is NOT a filter. Measured against Tavily on 2026-07-16:
+  #   site:linkedin.com/jobs/view ... Germany   -> 4x ng.linkedin.com (Nigeria),
+  #                                                1x lk.linkedin.com (Sri Lanka)
+  #   site:fraunhofer.de jobs student research  -> 0/10 on fraunhofer.de; it
+  #                                                returned US state job boards
+  # A provider that cannot satisfy `site:` answers semantically instead of
+  # returning nothing. That is how "Research Intern at Simple List NG" ended up
+  # in a German job board.
+  #
+  # `allowed_domains` is the real enforcement — it is checked against the URLs
+  # that come back. Name the exact host: `de.linkedin.com`, never `linkedin.com`
+  # (which legitimately admits every country subdomain, including ng/lk).
+  # -------------------------------------------------------------------------
+  - name: search_discovery
+    type: search_api
+    enabled: true
+    # Enforced on our side against every returned URL. Anything else is dropped.
+    #
+    # An allowlist trades recall for precision on purpose: a real posting at a
+    # university not named here is dropped too. That is the right trade while the
+    # alternative is Nigerian LinkedIn jobs — but it means adding a university to
+    # the queries also means adding its domain here, or the results vanish.
+    #
+    # A parent domain admits its own subdomains (`fraunhofer.de` covers
+    # `jobs.fraunhofer.de`), but nothing more: `tum.de` does NOT cover
+    # `mytum.de`, which is a different domain. List both when in doubt.
+    allowed_domains:
+      - de.linkedin.com
+      - fraunhofer.de
+      - mpg.de
+      - tum.de
+      - mytum.de
+      - tu-berlin.de
+      - rwth-aachen.de
+      - kit.edu
+      - tu-darmstadt.de
+      - uni-tuebingen.de
+      - dfki.de
+      - cyber-valley.de
+    # Advisory hint to the ranker, never a filter.
+    search_country: germany
+    # On the right host, but not job postings.
+    denied_url_patterns:
+      - 'linkedin\.com/(in|company|school|pulse)/'
+    # Queries still carry `site:` because it helps when it works.
+    queries:
+      - 'site:de.linkedin.com/jobs/view ("research assistant" OR "research intern") Germany'
+      - 'site:de.linkedin.com/jobs/view ("working student" OR "werkstudent") research Germany'
+      - 'site:fraunhofer.de jobs student research machine learning'
+      - 'site:mpg.de job student assistant artificial intelligence'
+      - '"wissenschaftliche hilfskraft" informatik'
+      - '"studentische hilfskraft" (machine learning OR "künstliche intelligenz") Germany'
+      - '"master thesis" (AI OR "machine learning") Germany student'
+    max_results_per_query: 20
+
+  # -------------------------------------------------------------------------
+  # Generic JSON API adapter. Maps an arbitrary JSON job endpoint onto the Job
+  # model via a field map. Dotted paths, `[]` walks a list.
+  # status: UNVERIFIED — example only; point it at a real endpoint.
+  # -------------------------------------------------------------------------
+  - name: example_json_api
+    type: json_api
+    enabled: false
+    url: "https://jobs.example.org/api/v1/positions?country=DE"
+    # Where the list of jobs lives inside the response.
+    items_path: "data.results"
+    field_map:
+      source_job_id: "id"
+      title: "title"
+      organization: "employer.name"
+      location: "location.city"
+      description: "description_html"
+      url: "links.self"
+      published_at: "posted_at"
+      application_deadline: "closes_at"
+      employment_type: "contract.type"
+    defaults:
+      country: Germany

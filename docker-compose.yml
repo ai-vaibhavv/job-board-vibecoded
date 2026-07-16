@@ -1,0 +1,48 @@
+# Usage:
+#   cp .env.example .env && edit .env
+#   cp config/settings.example.yaml config/settings.yaml
+#   cp config/sources.example.yaml config/sources.yaml
+#
+#   docker compose up -d                        # scheduler, searches at 08:00 and 18:00
+#   docker compose logs -f
+#   docker compose run --rm job-alerts search --dry-run    # one-off, sends nothing
+#   docker compose run --rm job-alerts send-test
+#   docker compose run --rm job-alerts stats
+
+services:
+  job-alerts:
+    build: .
+    image: germany-research-job-alerts:latest
+    container_name: job-alerts
+    restart: unless-stopped
+
+    # Secrets come from .env at runtime; they are never baked into the image.
+    env_file:
+      - .env
+
+    environment:
+      TZ: Europe/Berlin
+      JOB_ALERTS_DATABASE_PATH: /data/jobs.db
+
+    volumes:
+      # The database MUST persist: it is what remembers which jobs were already
+      # sent. Losing it means re-notifying everything.
+      - jobs-data:/data
+      # Config is mounted read-only so it can be edited without a rebuild.
+      - ./config:/app/config:ro
+
+    # Nothing here needs to write to the image filesystem.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jobs-data:

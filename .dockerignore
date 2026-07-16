@@ -1,0 +1,39 @@
+# Secrets must never enter the build context — they would be baked into a layer.
+.env
+*.env
+!.env.example
+
+# Local state
+data/
+*.db
+*.db-*
+*.log
+.cache/
+
+# Local config (mount it or bake your own instead)
+config/settings.yaml
+config/sources.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# VCS / editors / docs
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+*.pdf
+tests/

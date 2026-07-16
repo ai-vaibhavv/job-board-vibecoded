@@ -1,0 +1,351 @@
+# ---------------------------------------------------------------------------
+# Germany Research Job Alerts — main configuration
+#
+# Copy to config/settings.yaml and edit freely:
+#   cp config/settings.example.yaml config/settings.yaml
+#
+# Secrets do NOT belong here. Webhook URL and API keys live in `.env`.
+# ---------------------------------------------------------------------------
+
+search:
+  # Only notify about jobs published/discovered within this many days.
+  max_age_days: 30
+  # Hard cap on candidates pulled from a single source per run.
+  max_results_per_source: 100
+
+locations:
+  # When true, every German location is acceptable and the list below is used
+  # only for scoring/query expansion, not for filtering jobs out.
+  all_germany: true
+  include:
+    - Berlin
+    - Munich
+    - München
+    - Hamburg
+    - Frankfurt
+    - Stuttgart
+    - Cologne
+    - Köln
+    - Düsseldorf
+    - Bonn
+    - Aachen
+    - Karlsruhe
+    - Darmstadt
+    - Heidelberg
+    - Mannheim
+    - Tübingen
+    - Freiburg
+    - Dresden
+    - Leipzig
+    - Jena
+    - Potsdam
+    - Saarbrücken
+    - Erlangen
+    - Nuremberg
+    - Nürnberg
+    - Bremen
+    - Hanover
+    - Hannover
+    - Göttingen
+    - Münster
+    - Dortmund
+    - Bochum
+    - Essen
+    - Kiel
+    - Germany
+    - Deutschland
+    - Remote within Germany
+
+keywords:
+  # A job must match at least one positive keyword to survive filtering.
+  positive:
+    - research assistant
+    - research intern
+    - research internship
+    - student researcher
+    - working student research
+    - research working student
+    - student assistant
+    - graduate research assistant
+    - wissenschaftliche hilfskraft
+    - studentische hilfskraft
+    - hiwi
+    - werkstudent forschung
+    - forschungspraktikum
+    - master thesis
+    - masterarbeit
+    - abschlussarbeit
+    - thesis student
+    - machine learning intern
+    - artificial intelligence intern
+    - data science intern
+    - robotics intern
+    - computer vision intern
+    - NLP intern
+    - software research intern
+
+  # A match here rejects the job, subject to `phd_requires_explicit_signal`.
+  negative:
+    - professor
+    - professorship
+    - postdoc
+    - postdoctoral
+    - senior
+    - principal
+    - director
+    - head of
+    - mandatory completed PhD
+    - doctorate required
+    - ausbildung
+    - full-time permanent senior role
+
+  # Technical areas of interest. Used for scoring, never for rejection.
+  #
+  # German synonyms matter more than they look. Most German job boards title
+  # roles in German ("STUDENTISCHE HILFSKRAFT im Bereich Softwareentwicklung"),
+  # and an English-only list scores every one of them as topic-less — which,
+  # for list-page sources that expose no description, is the difference between
+  # clearing the notify threshold and being silently dropped. Add your own
+  # field's German terms here.
+  topics:
+    - artificial intelligence
+    - machine learning
+    - deep learning
+    - NLP
+    - natural language processing
+    - computer vision
+    - data science
+    - robotics
+    - software engineering
+    - distributed systems
+    - cybersecurity
+    - human-computer interaction
+    - information systems
+    # --- German equivalents of the above ---
+    - künstliche intelligenz
+    - maschinelles lernen
+    - maschinelle lernverfahren
+    - sprachverarbeitung
+    - bildverarbeitung
+    - computer vision
+    - datenanalyse
+    - datenwissenschaft
+    - robotik
+    - softwareentwicklung
+    - softwaretechnik
+    - verteilte systeme
+    - informatik
+    - informationssicherheit
+    - it-sicherheit
+    - mensch-maschine-interaktion
+    - mensch-computer-interaktion
+    - interaktionsdesign
+    - visualisierung
+    - simulation
+    - algorithmen
+
+filtering:
+  # A passing mention of a PhD ("PhD students also welcome") must not reject a
+  # job. When true, PhD-flavoured negative keywords only reject a job if the
+  # text shows a *requirement* ("completed PhD required", "Promotion
+  # vorausgesetzt"). Turn off for blunt keyword rejection.
+  phd_requires_explicit_signal: true
+  # Terms that turn a PhD mention into a genuine rejection.
+  phd_requirement_signals:
+    - completed phd required
+    - mandatory completed phd
+    - phd is required
+    - phd required
+    - doctorate required
+    - doctoral degree required
+    - requires a completed phd
+    - must hold a phd
+    - abgeschlossene promotion
+    - promotion vorausgesetzt
+    - promotion erforderlich
+  # Match keywords on word boundaries. Prevents "senior" matching "seniority"
+  # and, more importantly, keeps short tokens like "hiwi" from matching inside
+  # unrelated words.
+  word_boundary_matching: true
+
+scoring:
+  # Only jobs scoring at or above this are sent to Discord. 0–100.
+  #
+  # Was 55, lowered to 45 when `Scorer._location_match` stopped handing out a
+  # free `location_match` bonus to any job whose `country` said "Germany" —
+  # which, since `country` defaulted to "Germany" and nothing verified it, meant
+  # every job. Measured on the 125 stored jobs at the moment of the change:
+  #
+  #   85/125 lost the free +10
+  #   >= 55 after the change   :  2 jobs      (was 11 -> would have muted alerts)
+  #   >= 45 after the change   : 11 jobs
+  #   >= 55 with the +10 free  : 11 jobs      (i.e. 45 restores the old volume)
+  #
+  # The two numbers move together. If you re-tune `weights.location_match`, redo
+  # that measurement rather than guessing at this one.
+  #
+  # This is the KEYWORD threshold. LLM-scored jobs use `llm.min_score_to_notify`
+  # below and are unaffected — that path overwrites the score wholesale.
+  min_score_to_notify: 45
+  weights:
+    exact_title_match: 30
+    research_or_student_keyword_in_title: 20
+    topic_in_title: 15
+    topic_in_description: 10
+    location_match: 10
+    masters_explicitly_eligible: 15
+    english_speaking_role: 5
+    recently_published: 5
+    phd_required: -60
+    senior_role: -40
+    unrelated_discipline: -25
+  # A job counts as "recently published" within this many days.
+  recent_days: 7
+  # Titles that count as an exact target-title match (normalized, case-folded).
+  exact_titles:
+    - research assistant
+    - student research assistant
+    - research intern
+    - research internship
+    - working student research
+    - wissenschaftliche hilfskraft
+    - studentische hilfskraft
+    - hiwi
+    - werkstudent forschung
+    - master thesis
+    - masterarbeit
+  # Signals that a Master's student is explicitly welcome.
+  masters_signals:
+    - master student
+    - master's student
+    - masterstudent
+    - masterand
+    - msc student
+    - m.sc. student
+    - graduate student
+    - students enrolled
+    - immatrikuliert
+    - eingeschriebene studierende
+    - enrolled student
+  # Disciplines clearly outside the target areas. Costs `unrelated_discipline`.
+  unrelated_disciplines:
+    - nursing
+    - dentistry
+    - theology
+    - veterinary
+    - law firm
+    - accounting
+    - pflege
+    - zahnmedizin
+    - theologie
+
+notifications:
+  # Max Discord messages' worth of jobs per run. Extra jobs are stored and
+  # summarized ("+12 more stored") rather than dropped silently.
+  max_per_run: 10
+  # Jobs bundled into a single Discord message (Discord's hard cap is 10).
+  embeds_per_message: 5
+  # Length of the description excerpt inside an embed.
+  description_excerpt_chars: 400
+
+http:
+  # Sent on every request so site owners can identify this tool.
+  user_agent: "GermanyResearchJobAlerts/1.0 (+https://github.com/yourname/germany-research-job-alerts; personal job-search tool)"
+  # Seconds. Applied per request and to the whole run.
+  request_timeout: 20.0
+  total_run_timeout: 600.0
+  # Simultaneous requests across all sources.
+  max_concurrency: 5
+  # Minimum seconds between two requests to the same domain.
+  per_domain_delay: 1.5
+  max_retries: 3
+  # Honour robots.txt. Leave enabled — the spec requires it.
+  respect_robots: true
+  # Cache fetched pages for this many seconds to avoid re-downloading.
+  cache_ttl_seconds: 900
+
+database:
+  path: data/jobs.db
+  # Delete rejected/low-score jobs after this many days to keep the DB small.
+  rejected_retention_days: 60
+
+scheduler:
+  timezone: Europe/Berlin
+  # 24h clock, Europe/Berlin.
+  run_at:
+    - "08:00"
+    - "18:00"
+  # Skip a run if the previous one is still going.
+  lock_file: data/scheduler.lock
+
+llm:
+  # Use an LLM to judge relevance instead of keyword scoring.
+  #
+  # WHY: keywords cannot tell "PhD students welcome" from "PhD required", cannot
+  # see that a page titled "Studentische Hilfskraft ... Jobs" is a search page
+  # rather than a job, and cannot know "Sensordatenfusion" is signal processing
+  # unless you listed that exact word. An LLM does all three.
+  #
+  # SAFETY: this never becomes a dependency. No key, dead API, rate limit, or
+  # garbled reply -> the keyword scorer takes over automatically and you still
+  # get your alerts. Set enabled: false to switch it off entirely.
+  enabled: true
+
+  # Tried in order; the first with an API key and a working reply wins.
+  # Keys live in .env as GEMINI_API_KEY / GROQ_API_KEY.
+  providers:
+    - gemini
+    - groq
+
+  gemini_model: gemini-2.5-flash
+  groq_model: llama-3.3-70b-versatile
+
+  # Jobs per request. Bigger = fewer API calls, but a longer prompt (more tokens
+  # per call) and more lost if one batch fails.
+  batch_size: 10
+
+  # --- Rate limiting. These numbers are measured, not guessed. ---
+  # Free tiers are strict. A live run with max_concurrency: 2 and no pacing got
+  # 429 "quota exceeded" from Gemini AND 429 "tokens per minute" from Groq
+  # within seconds, because an 8-job prompt is ~4.7k tokens against Groq's
+  # 12k/minute limit — two requests per minute.
+  #
+  # One request at a time, spaced ~6s apart, keeps under Gemini's ~10 req/min
+  # free tier. Raise these only if you are on a paid tier.
+  max_concurrency: 1
+  min_request_interval: 6.0
+
+  # Retries after EVERY provider fails transiently (429 / 503 / timeout).
+  # Permanent failures (bad API key, malformed request) are never retried.
+  max_retries: 2
+  retry_base_delay: 20.0
+
+  timeout: 60.0
+
+  # Description characters sent per job. The single biggest lever on token use
+  # and therefore on rate limits: 1500 roughly doubles the prompt vs 700.
+  max_description_chars: 700
+
+  # Run the cheap keyword filter first and only send survivors to the LLM.
+  # Saves most of your quota. Set false to let the LLM see every candidate
+  # (uses far more quota, but can catch jobs the keywords would miss).
+  prefilter_with_keywords: true
+
+  # Notify threshold for LLM-scored jobs. Deliberately HIGHER than the keyword
+  # threshold (55), because the two scales are not the same scale.
+  #
+  # The prompt tells the model what each band means, so this maps to it directly:
+  #   90-100  ideal student research role in your field
+  #   70-89   strong: clearly a student/research role in a relevant field
+  #   55-69   "plausible, field unclear or loosely related"  <- noise
+  #
+  # Measured on a live run at 55, the 55-69 band was entirely off-field:
+  # "HiWi in sensorik", "HiWi in laserprozessen", "HiWi in psychologie",
+  # "HiWi role in unknown field". 70 cuts exactly that band and keeps the rest.
+  # Lower it to 55 if you would rather see more and filter by hand.
+  min_score_to_notify: 70
+
+logging:
+  level: INFO
+  # text | json
+  format: text
