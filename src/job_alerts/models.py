@@ -90,11 +90,30 @@ class Job(BaseModel):
     knows; a guess made here would not.
     """
 
+    city: str | None = None
+    """The town, when the posting names one. For reading, not for maths — there
+    is no radius search, only a country allowlist."""
+
     remote_status: RemoteStatus = RemoteStatus.UNKNOWN
     description: str | None = None
     url: str
+
+    contact_email: str | None = None
+    contact_url: str | None = None
+    """How to apply, when the posting is someone saying "email me" rather than a
+    job page with an apply button. Surfaced in the alert; never mailed
+    automatically — an untailored auto-application burns a real contact."""
+
     published_at: datetime | None = None
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    enriched_at: datetime | None = None
+    """When the real posting page was last fetched, or None if it never was.
+
+    Load-bearing for the recency rule. A job with no `published_at` might be
+    undated because nobody dated it, or because we only ever saw a search
+    snippet. Only the first is grounds for dropping it, and this is what tells
+    them apart."""
     application_deadline: datetime | None = None
     employment_type: str | None = None
     language: Language = Language.UNKNOWN
@@ -169,11 +188,22 @@ class RunSummary(BaseModel):
     candidates_found: int = 0
     after_dedup: int = 0
     passed_filter: int = 0
+    enriched: int = 0
+    """Jobs whose own page was successfully fetched and read."""
+    enrich_failed: int = 0
+    """Wanted enriching but could not be — robots, 404, timeout, denied host.
+    Not an error: they carry on with whatever the source gave."""
+    dropped_as_stale: int = 0
+    """Older than max_age_days, or fetched and found to carry no date at all."""
     above_threshold: int = 0
     newly_stored: int = 0
     notified: int = 0
     notify_failed: int = 0
     llm_assessed: int = 0
+    llm_cached: int = 0
+    """Verdicts reused from a previous run, costing no API quota at all. In a
+    steady state this should be most of them — if it is not, the cache key is
+    wrong and every run is re-buying yesterday's answers."""
     llm_fallback: int = 0
     """Jobs the LLM could not judge, scored by keywords instead."""
     llm_failures: list[str] = Field(default_factory=list)
@@ -203,6 +233,7 @@ class RunSummary(BaseModel):
         if self.llm_assessed or self.llm_fallback:
             lines.append(
                 f"  LLM assessed    : {self.llm_assessed}"
+                + (f"   ({self.llm_cached} from cache)" if self.llm_cached else "")
                 + (f"   ({self.llm_fallback} fell back to keywords)" if self.llm_fallback else "")
             )
             for failure in self.llm_failures:
@@ -211,6 +242,15 @@ class RunSummary(BaseModel):
             f"  Candidates      : {self.candidates_found}",
             f"  After dedup     : {self.after_dedup}",
             f"  Passed filter   : {self.passed_filter}",
+        ]
+        if self.enriched or self.enrich_failed:
+            lines.append(
+                f"  Enriched        : {self.enriched}"
+                + (f"   ({self.enrich_failed} could not be fetched)" if self.enrich_failed else "")
+            )
+        if self.dropped_as_stale:
+            lines.append(f"  Dropped (stale) : {self.dropped_as_stale}")
+        lines += [
             f"  Above threshold : {self.above_threshold}",
             f"  Newly stored    : {self.newly_stored}",
             f"  Notified        : {self.notified}"

@@ -145,20 +145,37 @@ def filter_job(job: Job, keywords: KeywordSettings, settings: FilteringSettings)
     )
 
 
-def is_recent_enough(job: Job, max_age_days: int, now=None) -> bool:
+def is_recent_enough(
+    job: Job, max_age_days: int, now=None, *, drop_undated_when_enriched: bool = True
+) -> bool:
     """Within the age window?
 
-    A job with no published date is kept: most HTML sources do not expose one,
-    and dropping them would silently blind whole sources. `discovered_at` acts
-    as the fallback clock.
+    The hard part is a job with no date, and the answer turns on whether we ever
+    looked. Two very different situations produce the same empty field:
+
+      * we only ever saw a search snippet, or the page refused to be fetched —
+        we have no idea how old it is, and inventing an opinion would silently
+        blind whole sources (every job in the first live database was undated);
+      * we fetched the real posting and it genuinely states no date — that is a
+        finding, and a hiring post nobody dated is not one to chase.
+
+    `enriched_at` is what separates them. Un-enriched, we fall back to
+    `discovered_at` and keep the job. Enriched and still undated, we drop it.
+    The rule therefore tightens on its own as enrichment coverage grows, instead
+    of needing a flag day.
     """
     from datetime import UTC, datetime, timedelta
 
     now = now or datetime.now(UTC)
-    reference = job.published_at or job.discovered_at
-    if reference is None:
+    cutoff = now - timedelta(days=max_age_days)
+
+    if job.published_at:
+        return job.published_at >= cutoff
+    if drop_undated_when_enriched and job.enriched_at is not None:
+        return False
+    if job.discovered_at is None:
         return True
-    return reference >= now - timedelta(days=max_age_days)
+    return job.discovered_at >= cutoff
 
 
 def matches_location(job: Job, locations: list[str], all_germany: bool) -> bool:

@@ -18,11 +18,19 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from .config import Secrets, Settings, SourcesConfig, build_search_query
+from .config import (
+    ProfileSettings,
+    Secrets,
+    Settings,
+    SourcesConfig,
+    build_search_query,
+)
 from .database import Database
+from .enrich import Enricher
 from .filtering import filter_job, is_recent_enough, matches_location
 from .http import PoliteClient
 from .llm import JobAssessment, LlmAssessor, build_providers
+from .llm.prompt import PROMPT_VERSION
 from .models import Job, JobStatus, RunSummary, SourceResult
 from .normalization import normalize_candidate
 from .notifications.discord import DiscordNotifier, render_dry_run
@@ -46,13 +54,19 @@ class Pipeline:
         sources_config: SourcesConfig,
         secrets: Secrets,
         database: Database,
+        profile: ProfileSettings | None = None,
     ) -> None:
         self.settings = settings
         self.sources_config = sources_config
         self.secrets = secrets
         self.db = database
+        # Defaults rather than a required argument: a profile.yaml is optional,
+        # and "Germany, no German-only jobs" is the right answer without one.
+        self.profile = profile or ProfileSettings()
         # job_id -> provider that judged it; used only for the explanation.
         self._llm_provider_used: dict[str, str] = {}
+        # Verdicts waiting for their jobs to exist. See `_flush_assessments`.
+        self._pending_assessments: list[tuple[str, str, dict, str | None]] = []
         self.scorer = Scorer(
             settings.scoring,
             topics=settings.keywords.topics,
@@ -87,16 +101,17 @@ class Pipeline:
                     f"timed out after {self.settings.http.total_run_timeout}s"
                 )
 
-        candidates = self._collect(results, summary)
-        summary.candidates_found = len(candidates)
+            candidates = self._collect(results, summary)
+            summary.candidates_found = len(candidates)
 
-        jobs = self._normalize_and_dedupe(candidates)
-        summary.after_dedup = len(jobs)
+            jobs = self._normalize_and_dedupe(candidates)
+            summary.after_dedup = len(jobs)
 
-        relevant = await self._filter_and_score(jobs, summary)
-        summary.above_threshold = len(relevant)
+            relevant = await self._filter_and_score(jobs, summary, client, dry_run=dry_run)
+            summary.above_threshold = len(relevant)
 
         to_notify = self._store(jobs, relevant, summary, dry_run=dry_run)
+        self._flush_assessments(dry_run=dry_run)
         await self._notify(to_notify, summary, dry_run=dry_run)
 
         if not dry_run and self.settings.database.rejected_retention_days > 0:
@@ -167,14 +182,23 @@ class Pipeline:
             jobs.append(job)
         return jobs
 
-    async def _filter_and_score(self, jobs: list[Job], summary: RunSummary) -> list[Job]:
+    async def _filter_and_score(
+        self, jobs: list[Job], summary: RunSummary, client: PoliteClient, *, dry_run: bool = False
+    ) -> list[Job]:
         """Decide which jobs are worth sending.
 
-        Two stages. The cheap, deterministic gates (age, location, keywords) run
-        first and cost nothing. Then, if an LLM is configured, it judges the
-        survivors — it understands "pursuing a PhD" ≠ "holds a PhD", spots index
-        pages, and maps German terms onto the user's topics, none of which
-        keyword matching can do.
+        Ordered by cost, cheapest first, because each stage exists to spare the
+        next one work:
+
+          1. Cheap deterministic gates — obviously-stale, wrong place, wrong
+             keywords. Free.
+          2. Enrichment. One HTTP fetch per survivor, so it runs *after* the
+             free gates and not before: there is no sense paying for the page of
+             a job the keywords already rejected. This is the same bargain
+             `prefilter_with_keywords` already strikes on the LLM's behalf.
+          3. The recency rule proper, now that enrichment has either found a date
+             or established that there isn't one.
+          4. The LLM, cache-first, on what is left.
 
         Every job the LLM does not return a verdict for is scored by the keyword
         scorer instead, so the LLM can fail wholesale, partially, or not at all
@@ -188,7 +212,11 @@ class Pipeline:
         survivors: list[Job] = []
 
         for job in jobs:
-            if not is_recent_enough(job, self.settings.search.max_age_days):
+            # Only jobs that state a date can be judged stale yet — an undated
+            # one has not been looked at, and the real check runs after
+            # enrichment. This pass exists purely to avoid fetching a page we
+            # already know is too old.
+            if job.published_at and not is_recent_enough(job, self.settings.search.max_age_days):
                 job.status = JobStatus.REJECTED
                 job.score_explanation = ["rejected: older than max_age_days"]
                 continue
@@ -216,18 +244,96 @@ class Pipeline:
 
         summary.passed_filter = passed_filter
 
-        assessments = await self._assess_with_llm(survivors, summary)
-        relevant = self._apply_scores(survivors, assessments, summary)
+        survivors = await self._enrich(survivors, client, summary)
+
+        recent: list[Job] = []
+        for job in survivors:
+            if is_recent_enough(
+                job,
+                self.settings.search.max_age_days,
+                drop_undated_when_enriched=self.settings.search.drop_undated_when_enriched,
+            ):
+                recent.append(job)
+            else:
+                job.status = JobStatus.REJECTED
+                job.score_explanation = [
+                    "rejected: no publication date on the posting itself"
+                    if job.published_at is None
+                    else "rejected: older than max_age_days"
+                ]
+        summary.dropped_as_stale = len(survivors) - len(recent)
+
+        assessments = await self._assess_with_llm(recent, summary, dry_run=dry_run)
+        relevant = self._apply_scores(recent, assessments, summary)
         relevant.sort(key=lambda j: j.relevance_score, reverse=True)
         return relevant
+
+    async def _enrich(
+        self, jobs: list[Job], client: PoliteClient, summary: RunSummary
+    ) -> list[Job]:
+        """Fetch the real posting for anything still thin.
+
+        Concurrency is the shared `PoliteClient`'s problem: it caps parallelism
+        and paces each domain, so 80 postings on one university's server queue
+        politely behind each other rather than arriving as a burst.
+
+        Never fatal, and never removes a job — an unenriched job simply carries
+        on with whatever it had.
+        """
+        if not self.settings.search.enrich:
+            return jobs
+
+        enricher = Enricher(client, min_description_chars=self.settings.search.enrich_below_chars)
+        wanted = [j for j in jobs if enricher.needs_enriching(j)]
+        if not wanted:
+            return jobs
+
+        logger.info("enriching %d of %d job(s) from their own pages", len(wanted), len(jobs))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(enricher.enrich(j) for j in wanted)),
+                timeout=self.settings.search.enrich_timeout,
+            )
+        except TimeoutError:
+            # Partial enrichment is fine: whatever finished kept its data, and
+            # everything else is simply un-enriched, which is a state the rest of
+            # the pipeline already handles.
+            logger.warning(
+                "enrichment exceeded %ss; continuing with what completed",
+                self.settings.search.enrich_timeout,
+            )
+
+        summary.enriched = sum(1 for j in wanted if j.enriched_at is not None)
+        summary.enrich_failed = len(wanted) - summary.enriched
+        return jobs
 
     @property
     def _llm_prefilter_enabled(self) -> bool:
         llm = self.settings.llm
         return not (llm.enabled and self.secrets.has_llm) or llm.prefilter_with_keywords
 
+    def _cached_assessments(self, jobs: list[Job]) -> dict[str, JobAssessment]:
+        """Verdicts already paid for, for jobs whose text has not changed.
+
+        This is what keeps a run's LLM cost proportional to what is *new* rather
+        than to the size of the database. Measured before it existed: a run with
+        108 surviving candidates exhausted the free tier of Gemini AND Groq and
+        fell back to keyword scoring for 48 of them — every run, re-judging jobs
+        it had already judged yesterday.
+        """
+        found: dict[str, JobAssessment] = {}
+        for job in jobs:
+            raw = self.db.get_assessment(job.id, job.content_hash, PROMPT_VERSION)
+            if raw is None:
+                continue
+            try:
+                found[job.id] = JobAssessment.model_validate(raw)
+            except Exception:  # pragma: no cover — a corrupt row must not stop a run
+                logger.debug("ignoring unreadable cached assessment for %s", job.id)
+        return found
+
     async def _assess_with_llm(
-        self, jobs: list[Job], summary: RunSummary
+        self, jobs: list[Job], summary: RunSummary, *, dry_run: bool = False
     ) -> dict[str, JobAssessment]:
         """LLM verdicts, or {} if the LLM is off, unconfigured or broken."""
         llm = self.settings.llm
@@ -243,9 +349,19 @@ class Pipeline:
         if not jobs:
             return {}
 
+        cached = self._cached_assessments(jobs)
+        summary.llm_cached = len(cached)
+        pending = [j for j in jobs if j.id not in cached]
+        if cached:
+            logger.info(
+                "%d assessment(s) served from cache, %d to judge", len(cached), len(pending)
+            )
+        if not pending:
+            return cached
+
         providers = build_providers(self.secrets, llm)
         if not providers:
-            return {}
+            return cached
 
         assessor = LlmAssessor(
             providers,
@@ -255,12 +371,33 @@ class Pipeline:
             all_germany=self.settings.locations.all_germany,
         )
         try:
-            assessments = await assessor.assess_all(jobs)
+            fresh = await assessor.assess_all(pending)
         except Exception:
             logger.exception("llm assessment failed entirely; falling back to keyword scoring")
-            return {}
+            return cached
         finally:
             await assessor.aclose()
+
+        # Queued rather than written now: an assessment references a job row, and
+        # the job is not stored until later in the run. The foreign key says so,
+        # and it is right to — a verdict about a job we never kept is garbage.
+        # Flushed by `_flush_assessments` once `_store` has run.
+        if not dry_run:
+            by_id = {j.id: j for j in pending}
+            for job_id, assessment in fresh.items():
+                job = by_id.get(job_id)
+                if job is None:  # pragma: no cover — assess_all matches by id
+                    continue
+                self._pending_assessments.append(
+                    (
+                        job.id,
+                        job.content_hash,
+                        assessment.model_dump(mode="json"),
+                        assessor.provider_used.get(job.id),
+                    )
+                )
+
+        assessments = {**cached, **fresh}
 
         self._llm_provider_used = assessor.provider_used
         summary.llm_assessed = len(assessments)
@@ -268,6 +405,46 @@ class Pipeline:
         if assessor.failures:
             summary.llm_failures = assessor.failures[:5]
         return assessments
+
+    def _flush_assessments(self, *, dry_run: bool) -> None:
+        """Write queued verdicts, now that their jobs exist.
+
+        Runs after `_store` because `job_assessments.job_id` references a real
+        job row. A verdict whose job was never stored is worthless anyway, so
+        skipping it is the correct outcome rather than a loss — and the run must
+        not die over a cache write, which is an optimisation, not the product.
+        """
+        if dry_run or not self._pending_assessments:
+            self._pending_assessments.clear()
+            return
+
+        saved = 0
+        for job_id, content_hash, payload, provider in self._pending_assessments:
+            try:
+                self.db.save_assessment(job_id, content_hash, PROMPT_VERSION, payload, provider)
+                saved += 1
+            except Exception as exc:
+                logger.debug("could not cache the assessment for %s: %s", job_id, exc)
+        logger.info("cached %d/%d assessment(s)", saved, len(self._pending_assessments))
+        self._pending_assessments.clear()
+
+    def _wrong_country(self, assessment: JobAssessment) -> str | None:
+        """Is this job somewhere I cannot work? None means keep it.
+
+        An unknown country is never grounds to reject. That is the whole lesson
+        of the `country = "Germany"` default: treating "we do not know" as an
+        answer is what let Nigerian postings into a German job board, and the
+        mirror-image mistake — treating "we do not know" as disqualifying —
+        would silently throw away every posting that simply never states where
+        it is. Only a country the model actually read, and that is not on the
+        list, is a rejection.
+        """
+        if not assessment.country:
+            return None
+        allowed = {c.strip().casefold() for c in self.profile.countries}
+        if assessment.country.strip().casefold() in allowed:
+            return None
+        return f"in {assessment.country}, not in {', '.join(self.profile.countries)}"
 
     def _apply_scores(
         self, jobs: list[Job], assessments: dict[str, JobAssessment], summary: RunSummary
@@ -306,6 +483,12 @@ class Pipeline:
                     hard_reject = "not an individual job posting"
                 elif assessment.requires_completed_phd:
                     hard_reject = "requires a completed PhD"
+                elif self.profile.exclude_german_required and assessment.german_required:
+                    # The requirement, not the language. A posting merely written
+                    # in German is fine and most of the TUM board is exactly that.
+                    hard_reject = "requires fluent German"
+                elif (reject := self._wrong_country(assessment)) is not None:
+                    hard_reject = reject
                 elif not assessment.suitable_for_masters:
                     hard_reject = "not suitable for a Master's student"
                 elif not assessment.topics and job.relevance_score > _NO_TOPIC_SCORE_CAP:

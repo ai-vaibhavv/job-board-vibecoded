@@ -25,7 +25,7 @@ from job_alerts.config import (
     SourcesConfig,
 )
 from job_alerts.database import Database
-from job_alerts.models import Job, JobCandidate
+from job_alerts.models import Job, JobCandidate, RunSummary
 from job_alerts.normalization import content_hash
 
 
@@ -226,6 +226,15 @@ def make_candidate(**overrides) -> JobCandidate:
     return JobCandidate(**base)
 
 
+def make_summary(**overrides) -> RunSummary:
+    """A throwaway RunSummary for stages that only want somewhere to put their
+    counters."""
+    now = datetime.now(UTC)
+    base = {"started_at": now, "finished_at": now}
+    base.update(overrides)
+    return RunSummary(**base)
+
+
 @pytest.fixture
 def job_factory():
     return make_job
@@ -234,3 +243,8 @@ def job_factory():
 @pytest.fixture
 def candidate_factory():
     return make_candidate
+
+
+@pytest.fixture
+def summary_factory():
+    return make_summary

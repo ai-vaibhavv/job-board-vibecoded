@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Who is looking — as opposed to how the app runs, which is settings.yaml.
+#
+# Copy and edit:
+#   cp config/profile.example.yaml config/profile.yaml
+#
+# Everything here is something no job board and no resume can tell you. The file
+# is optional: without it, the defaults below apply.
+# ---------------------------------------------------------------------------
+
+# Countries whose jobs are worth seeing.
+#
+# A job the LLM places outside this list is rejected. A job whose country it
+# could not determine is KEPT — "we do not know" is not grounds to drop
+# anything, and pretending otherwise is how the database ended up full of jobs
+# that claimed Germany on no evidence.
+#
+# Germany only, by default, and that is about permits rather than ambition: a
+# non-EU German student residence permit (§16b) authorises work in Germany. A
+# job in Vienna or Zurich needs Austria's or Switzerland's own permit, which in
+# practice means moving there and enrolling there — and Switzerland is non-EU
+# with quota-limited permits for non-EU nationals. Listing those countries would
+# surface jobs that cannot be accepted, which is noise, not coverage.
+#
+# The day that changes, add them here and flip the matching sources in
+# sources.yaml to `enabled: true`. They are already written.
+countries:
+  - Germany
+  # - Austria
+  # - Switzerland
+  # - Czechia
+
+# Drop jobs that state fluent German as a requirement.
+#
+# This does NOT drop jobs written in German, and the difference decides whether
+# the best source survives: most of TU München's HiWi board is German-language
+# advertising for groups that work in English every day. "Deutschkenntnisse
+# erforderlich" is a requirement; "Deutsch von Vorteil" is not; and an advert
+# that simply happens to be in German is not either.
+exclude_german_required: true

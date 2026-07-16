@@ -21,6 +21,17 @@ import json
 
 from ..models import Job
 
+PROMPT_VERSION = 2
+"""Bump whenever a change to this file would change a verdict.
+
+Verdicts are cached per job, so without this a rubric change would leave old
+scores sitting in the database next to new ones — two rubrics in one table, and
+scores that cannot be reproduced from the prompt that supposedly produced them.
+Bumping invalidates the cache and everything is re-judged once.
+
+v1 -> v2: added `german_required` and `country`.
+"""
+
 SYSTEM_PROMPT = """\
 You are a precise job-screening assistant for a Master's student in Germany.
 You read job postings and judge how well each fits the student. You are strict,
@@ -87,6 +98,28 @@ RULES — follow exactly.
    phd_position, postdoc, senior, other
 
 5. seniority — one of: student, entry, mid, senior
+
+5b. german_required — SAME SHAPE AS RULE 2. A mention is not a requirement.
+   Set true ONLY when fluent/working German is stated as a REQUIREMENT.
+     TRUE:  "Deutschkenntnisse erforderlich", "verhandlungssicheres Deutsch",
+            "Voraussetzung: Deutsch C1", "sehr gute Deutschkenntnisse
+            zwingend", "fluent German required"
+     FALSE: "Deutsch von Vorteil", "Deutschkenntnisse erwünscht",
+            "German is a plus", "gute Deutsch- ODER Englischkenntnisse"
+
+   A POSTING WRITTEN IN GERMAN IS NOT A POSTING REQUIRING GERMAN. This is the
+   most common way to get this wrong. German universities advertise in German
+   for groups that work in English every day; if the text never states a
+   language requirement, german_required is FALSE no matter what language the
+   advert happens to be in. Use `language` to record what it is written in.
+
+5c. country — where the job is, in English: "Germany", "Austria",
+   "Switzerland", "Czechia", … Use null when the posting does not say.
+
+   NULL IS A REAL ANSWER AND IT IS OFTEN THE RIGHT ONE. Do not guess from the
+   employer's name, the language of the advert, or the domain of the URL. A
+   posting on a German-language page may be a job in Vienna; a job at a company
+   with a German name may be in Nigeria. Say null unless the text tells you.
 
 6. topics — which of the student's fields of interest the job actually matches.
    Use the student's own wording. Map German terms yourself
@@ -175,10 +208,12 @@ Return JSON with exactly this shape, one entry per job, and nothing else:
       "is_job_posting": true,
       "role_type": "hiwi",
       "requires_completed_phd": false,
+      "german_required": false,
       "suitable_for_masters": true,
       "seniority": "student",
       "topics": ["machine learning"],
       "language": "de",
+      "country": "Germany",
       "score": 85,
       "reasoning": "Student HiWi role in machine learning at a German university."
     }}

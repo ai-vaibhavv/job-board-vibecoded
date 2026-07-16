@@ -62,10 +62,26 @@ class JobAssessment(BaseModel):
     requires_completed_phd: bool = False
     """True ONLY for a finished doctorate. "PhD students welcome" is not."""
 
+    german_required: bool = False
+    """True ONLY when fluent German is a stated requirement.
+
+    Not the same thing as the posting being written in German, and the
+    difference decides whether the best source survives: most of TU München's
+    HiWi board is German-language advertising roles that work in English. Filter
+    on language and the good jobs go with the bad. Same shape as
+    `requires_completed_phd` — a mention is not a requirement."""
+
     suitable_for_masters: bool = False
     seniority: str = "unknown"
     topics: list[str] = Field(default_factory=list)
     language: str = "unknown"
+
+    country: str | None = None
+    """Where the job is, in English ("Germany", "Austria"), or None when the
+    posting does not say.
+
+    None means unknown and must never be read as Germany — assuming that is the
+    original sin this field exists to undo."""
 
     score: int = 0
     reasoning: str = ""

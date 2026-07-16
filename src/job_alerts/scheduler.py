@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from .config import Secrets, Settings, SourcesConfig
+from .config import ProfileSettings, Secrets, Settings, SourcesConfig, load_profile
 from .database import Database
 from .pipeline import Pipeline
 
@@ -86,15 +86,13 @@ async def run_once(
     *,
     dry_run: bool = False,
     use_lock: bool = True,
+    profile: ProfileSettings | None = None,
 ) -> None:
     """One pipeline run, guarded by the lock."""
-
-    def _execute() -> asyncio.Future | None:
-        return None
-
+    profile = profile if profile is not None else load_profile(secrets=secrets)
     lock_ctx = run_lock(settings.scheduler.lock_file) if use_lock else _null_context()
     with lock_ctx, Database(settings.database.path) as db:
-        pipeline = Pipeline(settings, sources_config, secrets, db)
+        pipeline = Pipeline(settings, sources_config, secrets, db, profile)
         summary = await pipeline.run(dry_run=dry_run)
         print(summary.render())
 

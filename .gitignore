@@ -15,6 +15,7 @@ data/
 # Local configuration (copies of the examples)
 config/settings.yaml
 config/sources.yaml
+config/profile.yaml
 
 # Python
 __pycache__/

@@ -65,6 +65,63 @@ _MIGRATIONS: list[str] = [
         summary_json  TEXT
     );
     """,
+    # v2 — enrichment and the assessment cache.
+    #
+    # Purely additive: no table is rebuilt, so nothing can be lost and every
+    # existing row keeps its `status` and `notified_at`. Adding a column to
+    # `jobs` means touching the `Job` model, the INSERT column list and
+    # `_row_to_job` in the same change — the model is `extra="forbid"`, which is
+    # what makes a half-done version fail loudly instead of silently.
+    """
+    -- Where the job is, in words. Not coordinates: there is no radius search,
+    -- only a country allowlist, and a city is for reading.
+    ALTER TABLE jobs ADD COLUMN city TEXT;
+
+    -- How to apply when the posting is a person saying "email me". Extracted,
+    -- shown, never mailed automatically.
+    ALTER TABLE jobs ADD COLUMN contact_email TEXT;
+    ALTER TABLE jobs ADD COLUMN contact_url TEXT;
+
+    -- When we last fetched the real posting page. This is what lets the recency
+    -- rule tell "no date, we never looked" from "no date, we looked properly" —
+    -- only the second is grounds for dropping a job.
+    ALTER TABLE jobs ADD COLUMN enriched_at TEXT;
+
+    -- One LLM verdict per job, kept so a run costs its providers only the jobs
+    -- it has never seen. Without this, every run re-judges the whole database:
+    -- a live run against 108 surviving candidates exhausted the free tiers of
+    -- BOTH Gemini and Groq and fell back to keyword scoring for 48 jobs.
+    --
+    -- Keyed on content_hash so an edited posting is re-assessed, and on
+    -- prompt_version so changing the prompt invalidates verdicts made under the
+    -- old one rather than silently mixing two rubrics in one database.
+    CREATE TABLE IF NOT EXISTS job_assessments (
+        job_id          TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash    TEXT NOT NULL,
+        prompt_version  INTEGER NOT NULL,
+        assessment_json TEXT NOT NULL,
+        provider        TEXT,
+        assessed_at     TEXT NOT NULL
+    );
+    """,
+    # v3 — retract the country claim on rows that were never entitled to it.
+    #
+    # This belongs to v2 by rights, and started life there. It is a separate
+    # migration because v2 had already run against a live database by the time
+    # the omission was noticed, and an applied migration is history: editing one
+    # means every database that already ran it silently never gets the fix.
+    # Append, never amend.
+    #
+    # `Job.country` defaulted to "Germany" and `_row_to_job` re-applied it on
+    # read, so every search-discovered job asserted Germany on no evidence at
+    # all — including the Nigerian and Sri Lankan postings a broken `site:`
+    # filter let in. Those rows still say "Germany" on disk. NULL destroys
+    # nothing here: the value was never observed, and NULL is what "we do not
+    # know" is supposed to look like. Sources that assert their own country via
+    # `defaults:` (fraunhofer, tum_hiwi) genuinely know, and keep theirs.
+    """
+    UPDATE jobs SET country = NULL WHERE source = 'search_discovery';
+    """,
 ]
 
 
@@ -261,16 +318,23 @@ class Database:
                 """
                 INSERT INTO jobs (
                     id, source, source_job_id, title, organization, location, country,
-                    remote_status, description, url, published_at, discovered_at,
+                    city, remote_status, description, url, contact_email, contact_url,
+                    published_at, discovered_at, enriched_at,
                     application_deadline, employment_type, language, salary,
                     relevance_score, matched_keywords, score_explanation, content_hash,
                     notified_at, status
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     title             = excluded.title,
                     organization      = excluded.organization,
                     location          = excluded.location,
+                    country           = excluded.country,
+                    city              = excluded.city,
                     description       = excluded.description,
+                    contact_email     = excluded.contact_email,
+                    contact_url       = excluded.contact_url,
+                    published_at      = excluded.published_at,
+                    enriched_at       = excluded.enriched_at,
                     relevance_score   = excluded.relevance_score,
                     matched_keywords  = excluded.matched_keywords,
                     score_explanation = excluded.score_explanation,
@@ -285,11 +349,15 @@ class Database:
                     job.organization,
                     job.location,
                     job.country,
+                    job.city,
                     job.remote_status.value,
                     job.description,
                     job.url,
+                    job.contact_email,
+                    job.contact_url,
                     _dt(job.published_at),
                     _dt(job.discovered_at),
+                    _dt(job.enriched_at),
                     _dt(job.application_deadline),
                     job.employment_type,
                     job.language.value,
@@ -325,6 +393,64 @@ class Database:
                 "UPDATE jobs SET status = ? WHERE id = ?", (JobStatus.REJECTED.value, job_id)
             )
 
+    # -- assessment cache -------------------------------------------------
+
+    def get_assessment(self, job_id: str, content_hash: str, prompt_version: int) -> dict | None:
+        """A cached LLM verdict, if one was made for *this* posting text under
+        *this* prompt. Otherwise None, and the caller pays for a fresh one.
+
+        Both keys matter. `content_hash` means an edited posting is re-judged;
+        `prompt_version` means changing the rubric invalidates old verdicts
+        rather than leaving two rubrics mixed in one database, which would show
+        up as scores that cannot be reproduced.
+        """
+        row = self._conn.execute(
+            """
+            SELECT assessment_json FROM job_assessments
+            WHERE job_id = ? AND content_hash = ? AND prompt_version = ?
+            """,
+            (job_id, content_hash, prompt_version),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["assessment_json"])
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            logger.warning("cached assessment for %s is not valid json; ignoring", job_id)
+            return None
+
+    def save_assessment(
+        self,
+        job_id: str,
+        content_hash: str,
+        prompt_version: int,
+        assessment: dict,
+        provider: str | None = None,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_assessments
+                    (job_id, content_hash, prompt_version, assessment_json, provider, assessed_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hash    = excluded.content_hash,
+                    prompt_version  = excluded.prompt_version,
+                    assessment_json = excluded.assessment_json,
+                    provider        = excluded.provider,
+                    assessed_at     = excluded.assessed_at
+                """,
+                (
+                    job_id,
+                    content_hash,
+                    prompt_version,
+                    json.dumps(assessment),
+                    provider,
+                    _dt(when or datetime.now(UTC)),
+                ),
+            )
+
     def record_run(self, started_at: datetime, finished_at: datetime, summary_json: str) -> None:
         with self._tx() as conn:
             conn.execute(
@@ -351,12 +477,19 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         title=row["title"],
         organization=row["organization"],
         location=row["location"],
-        country=row["country"] or "Germany",
+        # `or "Germany"` used to live here too, so a NULL country was re-invented
+        # as Germany on every single read. Fixing the model default alone would
+        # have left the lie intact one layer down.
+        country=row["country"],
+        city=row["city"],
         remote_status=row["remote_status"] or "unknown",
         description=row["description"],
         url=row["url"],
+        contact_email=row["contact_email"],
+        contact_url=row["contact_url"],
         published_at=_parse_dt(row["published_at"]),
         discovered_at=_parse_dt(row["discovered_at"]) or datetime.now(UTC),
+        enriched_at=_parse_dt(row["enriched_at"]),
         application_deadline=_parse_dt(row["application_deadline"]),
         employment_type=row["employment_type"],
         language=row["language"] or "unknown",

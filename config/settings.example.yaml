@@ -8,10 +8,30 @@
 # ---------------------------------------------------------------------------
 
 search:
-  # Only notify about jobs published/discovered within this many days.
-  max_age_days: 30
+  # Only notify about jobs published within this many days.
+  #
+  # This was 30 and did nothing at all: every one of the 125 stored jobs had no
+  # `published_at` (fraunhofer 0/25, search_discovery 0/100), and an undated job
+  # falls back to `discovered_at`, which is always "now" for a job we just found.
+  # The filter could not fire. It works now because the TUM feed carries real
+  # pubDates and enrichment reads dates off the posting page.
+  max_age_days: 7
   # Hard cap on candidates pulled from a single source per run.
   max_results_per_source: 100
+
+  # Fetch each thin job's own page before judging it. This is what turns a
+  # 160-character search snippet into a real description with a date, a city and
+  # a contact — the single change everything downstream depends on.
+  enrich: true
+  # A description shorter than this means the source handed us a stub.
+  enrich_below_chars: 400
+  # Whole-stage budget. Overrunning is not an error: whatever finished keeps its
+  # data and the rest stay un-enriched, which the pipeline handles.
+  enrich_timeout: 240.0
+  # Drop a job with no date only when we FETCHED its page and found none.
+  # A job we never managed to look at is kept — absence of evidence gathered is
+  # not evidence of absence.
+  drop_undated_when_enriched: true
 
 locations:
   # When true, every German location is acceptable and the list below is used

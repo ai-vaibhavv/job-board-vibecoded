@@ -51,6 +51,7 @@ class Secrets(BaseSettings):
 
     job_alerts_settings_file: Path = Path("config/settings.yaml")
     job_alerts_sources_file: Path = Path("config/sources.yaml")
+    job_alerts_profile_file: Path = Path("config/profile.yaml")
     job_alerts_database_path: Path | None = None
     job_alerts_log_level: str | None = None
     job_alerts_log_format: Literal["text", "json"] | None = None
@@ -99,6 +100,26 @@ class SearchSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_age_days: int = 30
     max_results_per_source: int = 100
+
+    enrich: bool = True
+    """Fetch each thin job's own page before judging it. Off, and the pipeline is
+    back to scoring a title and a 160-character snippet."""
+
+    enrich_below_chars: int = 400
+    """A description shorter than this means the source gave a stub, so the page
+    is worth a fetch."""
+
+    enrich_timeout: float = 240.0
+    """Whole-stage budget. Exceeding it is not an error — whatever finished keeps
+    its data, and the rest stay un-enriched, which the pipeline already handles."""
+
+    drop_undated_when_enriched: bool = True
+    """Drop a job that has no date *after* we fetched its page and looked.
+
+    Not the same as dropping every undated job: when a fetch never happened, we
+    have no opinion and the job is kept. This is what makes `max_age_days` mean
+    something — before enrichment existed, 125/125 stored jobs were undated and
+    the age filter was inert."""
 
 
 class LocationSettings(BaseModel):
@@ -370,6 +391,57 @@ def _read_yaml(path: Path, *, example: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level.")
     return raw
+
+
+class ProfileSettings(BaseModel):
+    """Who is looking, and for what — as opposed to how the app runs.
+
+    Everything here is a fact about the person that no job board and no resume
+    can supply. It lives in its own file for the same reason: `settings.yaml` is
+    machinery, this is intent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    countries: list[str] = Field(default_factory=lambda: ["Germany"])
+    """Countries whose jobs are worth seeing. A job the LLM places outside this
+    list is rejected; a job whose country it could not determine is kept, because
+    "we do not know" has never been grounds to drop anything here.
+
+    Germany only, by default, and that is a statement about permits rather than
+    ambition: a non-EU German student residence permit authorises work in
+    Germany. An Austrian, Swiss or Czech job needs that country's own permit,
+    which in practice means moving there and enrolling there. Listing them would
+    surface jobs that cannot be accepted, which is noise, not coverage. Add them
+    the day that changes — the sources are already written, just disabled.
+    """
+
+    exclude_german_required: bool = True
+    """Drop jobs that state fluent German as a requirement.
+
+    Note what this is not: it does not drop jobs *written* in German. Most of TU
+    München's HiWi board is German-language advertising for groups that work in
+    English, and filtering on language rather than requirement would throw away
+    the best source in the config. See `german_required` in the prompt.
+    """
+
+
+def load_profile(path: Path | None = None, secrets: Secrets | None = None) -> ProfileSettings:
+    """The profile, or defaults when the file does not exist.
+
+    Deliberately not an error when missing, unlike settings.yaml: a fresh clone
+    should run, and "Germany, no German-only jobs" is the right default for the
+    person this was built for.
+    """
+    secrets = secrets or Secrets()
+    path = path or secrets.job_alerts_profile_file
+    if not Path(path).exists():
+        return ProfileSettings()
+    data = _read_yaml(path, example="config/profile.example.yaml")
+    try:
+        return ProfileSettings.model_validate(data)
+    except Exception as exc:
+        raise ConfigError(f"{path} has invalid profile settings:\n{exc}") from exc
 
 
 def load_settings(path: Path | None = None, secrets: Secrets | None = None) -> Settings:

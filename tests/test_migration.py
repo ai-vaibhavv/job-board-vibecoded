@@ -65,10 +65,10 @@ class TestMigrationSafety:
 
         monkeypatch.setattr(
             "job_alerts.database._MIGRATIONS",
-            [*_MIGRATIONS, "ALTER TABLE jobs ADD COLUMN city TEXT;"],
+            [*_MIGRATIONS, "ALTER TABLE jobs ADD COLUMN _probe TEXT;"],
         )
         with Database(path) as db:
-            assert db.migrate() == 2
+            assert db.migrate() == len(_MIGRATIONS) + 1
 
         backups = list(tmp_path.glob("jobs.db.v1.bak"))
         assert backups, f"no backup written; found {[p.name for p in tmp_path.iterdir()]}"
@@ -80,14 +80,18 @@ class TestMigrationSafety:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
         # It is the *pre*-migration state: the new column must not be in it.
         columns = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-        assert "city" not in columns
+        assert "_probe" not in columns
         conn.close()
 
     def test_no_backup_when_there_is_nothing_pending(self, tmp_path):
-        """A v1 database against a v1 schema has no migration to protect against,
-        so it must not litter a .bak on every single run."""
+        """An already-current database has no migration to protect against, so
+        it must not litter a fresh .bak on every single run."""
         path = tmp_path / "jobs.db"
-        _make_v1_db(path, rows=3)
+        with Database(path):
+            pass  # brings a fresh file up to the current version
+        for stale in tmp_path.glob("*.bak"):
+            stale.unlink()
+
         with Database(path):
             pass
         assert not list(tmp_path.glob("*.bak"))
@@ -122,12 +126,12 @@ class TestMigrationSafety:
 
         monkeypatch.setattr(
             "job_alerts.database._MIGRATIONS",
-            [*_MIGRATIONS, "ALTER TABLE jobs ADD COLUMN city TEXT;"],
+            [*_MIGRATIONS, "ALTER TABLE jobs ADD COLUMN _probe TEXT;"],
         )
         monkeypatch.setattr("job_alerts.database.sqlite3.connect", _only_for_backup())
 
         with Database(path) as db:
-            assert db.migrate() == 2
+            assert db.migrate() == len(_MIGRATIONS) + 1
             assert len(db.list_jobs(limit=10)) == 2
         assert not list(tmp_path.glob("*.bak"))
 
@@ -143,6 +147,123 @@ def _only_for_backup():
         return real(target, *args, **kwargs)
 
     return fake
+
+
+class TestV2Enrichment:
+    """v2 adds enrichment columns and the assessment cache. Additive only: no
+    table is rebuilt, so no existing row can be lost."""
+
+    def test_v1_rows_survive_and_keep_their_notification_history(self, tmp_path):
+        path = tmp_path / "jobs.db"
+        _make_v1_db(path, rows=4)
+
+        with Database(path) as db:
+            jobs = db.list_jobs(limit=100)
+            assert len(jobs) == 4
+            assert all(j.status == "notified" for j in jobs)
+            assert all(j.notified_at is not None for j in jobs)
+            # New columns exist and are empty, not invented.
+            assert all(j.city is None for j in jobs)
+            assert all(j.enriched_at is None for j in jobs)
+            assert all(j.contact_email is None for j in jobs)
+
+    def test_a_null_country_reads_back_as_none_not_germany(self, tmp_path):
+        """`_row_to_job` used to do `row["country"] or "Germany"`, so an unknown
+        country was re-invented on every read. The model default was only half
+        the bug."""
+        path = tmp_path / "jobs.db"
+        _make_v1_db(path, rows=1)
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE jobs SET country = NULL")
+        conn.commit()
+        conn.close()
+
+        with Database(path) as db:
+            assert db.list_jobs(limit=1)[0].country is None
+
+    def test_the_assessment_cache_round_trips(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            assert db.get_assessment("j1", "hash1", 1) is None
+
+            db.save_assessment("j1", "hash1", 1, {"score": 80, "role_type": "hiwi"}, "gemini")
+            assert db.get_assessment("j1", "hash1", 1) == {"score": 80, "role_type": "hiwi"}
+
+    def test_an_edited_posting_invalidates_its_verdict(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            # Same job, new content -> the old verdict must not be reused.
+            assert db.get_assessment("j1", "hash2", 1) is None
+
+    def test_changing_the_prompt_invalidates_old_verdicts(self, tmp_path, job_factory):
+        """Otherwise two rubrics coexist in one database and scores stop being
+        reproducible."""
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            assert db.get_assessment("j1", "hash1", 2) is None
+
+    def test_reassessing_replaces_rather_than_duplicates(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            db.save_assessment("j1", "hash2", 1, {"score": 40}, "groq")
+            assert db.get_assessment("j1", "hash2", 1) == {"score": 40}
+            count = db._conn.execute("SELECT count(*) FROM job_assessments").fetchone()[0]
+            assert count == 1
+
+    def test_an_assessment_cannot_outlive_its_job(self, tmp_path, job_factory):
+        """ON DELETE CASCADE, which only works because foreign_keys is enabled
+        after migrate() rather than never."""
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+
+            with db._tx() as conn:
+                conn.execute("DELETE FROM jobs WHERE id = 'j1'")
+
+            orphans = db._conn.execute("SELECT count(*) FROM job_assessments").fetchone()[0]
+            assert orphans == 0
+
+    def test_a_verdict_for_an_unknown_job_is_refused(self, tmp_path):
+        """The cache is keyed to real jobs; a dangling verdict is a bug, and the
+        foreign key is what says so instead of letting it rot in the table."""
+        with Database(tmp_path / "jobs.db") as db, pytest.raises(sqlite3.IntegrityError):
+            db.save_assessment("ghost", "hash1", 1, {"score": 80}, "gemini")
+
+
+class TestV3CountryRetraction:
+    """v3 withdraws the "Germany" claim from rows that never earned it."""
+
+    def _seed(self, path, source: str, country: str) -> None:
+        conn = sqlite3.connect(str(path))
+        conn.executescript(_MIGRATIONS[0])
+        conn.execute("PRAGMA user_version = 1")
+        conn.execute(
+            """
+            INSERT INTO jobs (id, source, title, url, discovered_at, content_hash, country)
+            VALUES (?, ?, 'T', ?, '2026-07-01T08:00:00+00:00', 'h', ?)
+            """,
+            (f"{source}:1", source, f"https://x.de/{source}", country),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_search_discovered_jobs_stop_claiming_germany(self, tmp_path):
+        """These are the rows that said Germany while being Nigerian."""
+        path = tmp_path / "jobs.db"
+        self._seed(path, "search_discovery", "Germany")
+        with Database(path) as db:
+            assert db.list_jobs(limit=1)[0].country is None
+
+    def test_a_source_that_knows_its_country_keeps_it(self, tmp_path):
+        """fraunhofer only ever lists German jobs and says so through
+        `defaults:`. That is an assertion, not a default, and it survives."""
+        path = tmp_path / "jobs.db"
+        self._seed(path, "fraunhofer", "Germany")
+        with Database(path) as db:
+            assert db.list_jobs(limit=1)[0].country == "Germany"
 
 
 @pytest.mark.parametrize("version", range(len(_MIGRATIONS)))
