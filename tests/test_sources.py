@@ -772,6 +772,15 @@ class TestListingPageFiltering:
             ("Anything", "https://example.de/jobs/search?q=hiwi"),
             ("Anything", "https://example.de/jobsuche/"),
             ("Anything", "https://example.de/stellenangebote.html"),
+            # Seen live: scored 95 and reached a real Discord alert. A page that
+            # invites you to come and discuss a thesis is not a position.
+            (
+                "AIML Lab - Thesis Opportunities",
+                "https://ml.informatik.tu-darmstadt.de/thesis/proposal/index.html",
+            ),
+            ("Research Opportunities", "https://example.de/x"),
+            ("Current Openings", "https://example.de/x"),
+            ("PhD Openings in Machine Learning", "https://example.de/x"),
         ],
     )
     def test_listing_pages_are_dropped(self, title, url):
@@ -799,6 +808,15 @@ class TestListingPageFiltering:
             ("Studentische Hilfskraft (m/w/d): Energietechnik", "https://uni.de/jobs/9"),
             ("HiWi / student assistants - Max Planck Institute", "https://mpi.de/jobs/3"),
             ("Student Assistant for the VisPer Project", "https://uni.de/jobs/4"),
+            # Real, and the reason "positions" is not a listing plural: one
+            # applyable Cyber Valley page offering several seats. Add "positions"
+            # to the plurals and the `<plural> in <place>` branch eats this.
+            (
+                "Student Assistant (HiWi)/Internship Positions in Vision-Based Autonomous Systems",
+                "https://cyber-valley.de/de/jobs/student-assistant-hiwi-internship-positions",
+            ),
+            # Singular: one thesis on offer, not a catalogue of them.
+            ("Master Thesis Opportunity in NLP", "https://uni.de/jobs/7"),
         ],
     )
     def test_real_postings_are_kept(self, title, url):

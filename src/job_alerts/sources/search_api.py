@@ -548,9 +548,20 @@ _LISTING_URL_RE = re.compile(
 
 # Index pages are titled after the search, not after a role: "… Jobs",
 # "… Stellenangebote". A real posting is titled after the position.
+# `opportunities` and `openings` were added after "AIML Lab - Thesis
+# Opportunities" (ml.informatik.tu-darmstadt.de/thesis/proposal/index.html)
+# scored 95 and reached a live Discord alert. It is a landing page inviting you
+# to come and discuss a thesis, not a position you can apply to.
+#
+# `positions` is deliberately NOT here. A real advert from Cyber Valley reads
+# "Student Assistant (HiWi)/Internship Positions in Vision-Based Autonomous
+# Systems" — one applyable page offering several seats. The `<plural> in <place>`
+# branch below would have thrown it away. The words differ in practice: a page
+# titled "Opportunities" is browsing, a page titled "Positions in X" is often
+# hiring.
 _LISTING_PLURALS = (
     r"jobs|stellenangebote|stellenanzeigen|stellenb(?:ö|oe)rse"
-    r"|jobb(?:ö|oe)rse|vacancies|jobsuche|job\s+search"
+    r"|jobb(?:ö|oe)rse|vacancies|jobsuche|job\s+search|opportunities|openings"
 )
 _LISTING_TITLE_RE = re.compile(
     # An index page is titled after the search; a real posting names the role.
