@@ -36,6 +36,7 @@ from .normalization import normalize_candidate
 from .notifications.discord import DiscordNotifier, render_dry_run
 from .scoring import Scorer
 from .sources import build_sources
+from .sources.linkedin_posts import PostsUnavailable
 from .sources.search_api import SearchUnavailable
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,9 @@ class Pipeline:
                 if SearchUnavailable.__name__ in result.error:
                     summary.sources_skipped[result.source] = "no search API key configured"
                     logger.info("source %s skipped: no search API key", result.source)
+                elif PostsUnavailable.__name__ in result.error:
+                    summary.sources_skipped[result.source] = "no APIFY_TOKEN configured"
+                    logger.info("source %s skipped: no APIFY_TOKEN", result.source)
                 else:
                     summary.sources_failed[result.source] = result.error
                 continue
@@ -481,6 +485,11 @@ class Pipeline:
                 hard_reject = None
                 if not assessment.is_job_posting:
                     hard_reject = "not an individual job posting"
+                elif not assessment.is_hiring_post:
+                    # A social post about a job is not a job. "I recently joined
+                    # X as a Working Student in AI" matches every keyword and is
+                    # somebody celebrating.
+                    hard_reject = "about a job rather than offering one"
                 elif assessment.requires_completed_phd:
                     hard_reject = "requires a completed PhD"
                 elif self.profile.exclude_german_required and assessment.german_required:

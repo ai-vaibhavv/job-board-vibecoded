@@ -60,6 +60,59 @@ class TestDatabaseDeduplication:
         assert db.upsert(rss_job) is True
         assert db.is_duplicate(search_job) is True
 
+    def test_storing_the_same_url_under_a_second_id_does_not_explode(self, db: Database):
+        """This crashed a live run.
+
+        The test above stopped one line too early: it asked `is_duplicate` and
+        never actually stored the second job. `upsert` only conflicted on `id`,
+        so a same-URL-different-id job sailed past the ON CONFLICT clause,
+        struck the UNIQUE index on `url`, and killed the run with an
+        IntegrityError — after writing 94 rows and before notifying anything.
+
+        Latent for as long as no two sources overlapped. It became real the
+        moment TUM's feed and the web search started finding the same pages.
+        """
+        rss_job = make_job(
+            id="tum_hiwi:https://portal.mytum.de/x",
+            source="tum_hiwi",
+            url="https://portal.mytum.de/x",
+        )
+        search_job = make_job(
+            id="search_discovery:h:abc", source="search_discovery", url="https://portal.mytum.de/x"
+        )
+
+        assert db.upsert(rss_job) is True
+        assert db.upsert(search_job) is False  # not new — it is the same posting
+
+        assert len(db.list_jobs(limit=10)) == 1
+
+    def test_a_second_id_adopts_the_stored_one_so_notification_state_survives(self, db: Database):
+        """Adopting the stored id is not cosmetic. Keep the incoming id and
+        `mark_notified` would update a row that does not exist, so the job would
+        be announced again on every run, forever."""
+        first = make_job(id="tum_hiwi:abc", source="tum_hiwi", url="https://uni.de/jobs/1")
+        db.upsert(first)
+        db.mark_notified([first.id])
+
+        second = make_job(id="search_discovery:h:xyz", source="search", url="https://uni.de/jobs/1")
+        db.upsert(second)
+
+        assert second.id == "tum_hiwi:abc"
+        stored = db.get("tum_hiwi:abc")
+        assert stored is not None
+        assert stored.notified_at is not None
+        assert stored.status == "notified"
+
+    def test_the_url_owner_keeps_its_notified_state_when_rediscovered(self, db: Database):
+        """The whole point: a job already sent must not come back as new."""
+        first = make_job(id="rss:1", url="https://uni.de/jobs/1")
+        db.upsert(first)
+        db.mark_notified(["rss:1"])
+
+        rediscovered = make_job(id="search:h:1", url="https://uni.de/jobs/1")
+        assert db.upsert(rediscovered) is False
+        assert db.get("rss:1").status == "notified"
+
     def test_different_urls_are_not_duplicates(self, db: Database):
         db.upsert(make_job(id="s:1", url="https://uni.de/jobs/1"))
         assert db.is_duplicate(make_job(id="s:2", url="https://uni.de/jobs/2")) is False

@@ -122,6 +122,16 @@ def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
         add_field("💼 Type", sanitize(job.employment_type))
     if job.salary:
         add_field("💶 Salary", sanitize(job.salary))
+
+    # How to apply, when the posting named a person rather than an apply button.
+    # Shown, never used: the app does not send anything on your behalf. An
+    # untailored auto-application to a research lab reads as automated, gets
+    # ignored, and burns a contact you only get one of.
+    if job.contact_email:
+        add_field("✉️ Apply to", sanitize(job.contact_email))
+    if job.contact_url:
+        add_field("📝 Apply via", sanitize(job.contact_url), inline=False)
+
     if job.matched_keywords:
         add_field("🏷️ Matched", sanitize(", ".join(job.matched_keywords[:6])), inline=False)
 

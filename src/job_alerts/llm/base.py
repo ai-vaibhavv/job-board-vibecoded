@@ -55,6 +55,19 @@ class JobAssessment(BaseModel):
     that is not one applicable position. Catches the class of junk that the
     regex listing-filter can only approximate."""
 
+    is_hiring_post: bool = True
+    """False when the text is *about* a job without offering one.
+
+    Only social posts can get this wrong, and they get it wrong constantly. Real
+    examples from one live search: "New chapter: I recently joined mylantech
+    GmbH as a Working Student in AI Automation" — every keyword matches, and it
+    is somebody celebrating, not hiring. "Hot Startup Positions in Munich… 63
+    open positions" — a newsletter. "Was sind uns stabile Releases wert?" — an
+    opinion.
+
+    Defaults True so an ordinary job page, which is self-evidently an offer, is
+    unaffected."""
+
     role_type: str = "other"
     """research_assistant | hiwi | werkstudent | research_intern | master_thesis
     | phd_position | postdoc | senior | other"""

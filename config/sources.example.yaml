@@ -264,6 +264,58 @@ sources:
     max_results_per_query: 20
 
   # -------------------------------------------------------------------------
+  # LinkedIn POSTS — jobs advertised as ordinary posts, not in the jobs section.
+  # A lot of German lab hiring never reaches the job board: someone writes "wir
+  # suchen eine studentische Hilfskraft, meldet euch per Mail" and that is the
+  # whole advert. A web search cannot see those — the link and the email live in
+  # the post body, the one part a search result does not carry.
+  #
+  # We still never touch linkedin.com. The bodies come from a vendor's API, on
+  # our own key, exactly like a search provider. Cookie-based actors are NOT
+  # supported: an actor that wants your `li_at` session cookie is a burner
+  # account with extra steps.
+  #
+  # Requires APIFY_TOKEN in `.env`. Without it this source skips itself and every
+  # other source runs unaffected.
+  #
+  # COST: $5.00 per 1000 results against Apify's $5/month free credit — roughly
+  # a thousand posts a month for nothing. `limit` is per keyword, per run, and
+  # caps at 50.
+  #
+  # status: VERIFIED live 2026-07-16 — the actor answered and returned real post
+  #         bodies with real dates (`posted_at.timestamp`).
+  #
+  # WHAT TO EXPECT, measured rather than hoped: `"werkstudent" machine learning`
+  # sorted by date over the past week returned TWO posts, and one of them was a
+  # newsletter roundup ("63 open positions in Munich"), not a job. This source is
+  # thin and noisy in a way keywords cannot fix — the LLM verification step is
+  # what makes it usable. Do not be surprised by small numbers here.
+  #
+  # The keywords are German on purpose. "werkstudent" and "studentische
+  # hilfskraft" are not words anywhere else, so the query filters the country for
+  # free and no credit is spent on results from the wrong continent.
+  # -------------------------------------------------------------------------
+  - name: linkedin_posts
+    type: linkedin_posts
+    enabled: true
+    backend: apify
+    # In config so a rotted actor is an edit, not a release. Community-run, and
+    # scraping a company that fights scrapers — expect it to break sometimes.
+    actor: "apimaestro/linkedin-posts-search-scraper-no-cookies"
+    # Freshness over relevance: a hiring post is dead within days.
+    sort_type: date_posted
+    # Enforces the age window at the vendor, so no credit is spent on posts that
+    # `search.max_age_days` would throw away anyway.
+    date_filter: past-week
+    queries:
+      - '"studentische hilfskraft" (machine learning OR "künstliche intelligenz")'
+      - '"werkstudent" (machine learning OR "data science" OR KI)'
+      - '"hiwi" (machine learning OR informatik OR NLP)'
+      - '"masterarbeit" (machine learning OR "deep learning")'
+      - '"wissenschaftliche hilfskraft" informatik'
+    max_results_per_query: 25
+
+  # -------------------------------------------------------------------------
   # Generic JSON API adapter. Maps an arbitrary JSON job endpoint onto the Job
   # model via a field map. Dotted paths, `[]` walks a list.
   # status: UNVERIFIED — example only; point it at a real endpoint.

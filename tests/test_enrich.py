@@ -12,7 +12,7 @@ import pytest
 import respx
 
 from job_alerts.config import HttpSettings
-from job_alerts.enrich import Enricher, extract
+from job_alerts.enrich import Enricher, extract, looks_like_a_place
 from job_alerts.http import PoliteClient
 
 JOB_PAGE = """
@@ -86,6 +86,40 @@ class TestExtract:
 
     def test_reads_the_location(self):
         assert extract(JOB_PAGE).location == "Garching bei München"
+
+    def test_a_taxonomy_in_a_field_named_location_is_not_a_location(self):
+        """Fraunhofer's SuccessFactors pages put their tag list inside
+        `<p class="job-location">`. The class name says location; the content
+        says "Job Segment: Research Assistant, Industrial Engineer, ...". This
+        reached a live Discord alert before the value was checked rather than
+        the selector trusted."""
+        html = """<html><body><main>
+            <p class="job-location">Job Segment: Research Assistant, Industrial Engineer,
+               Mechanical Engineer, Intern, Research, Engineering</p>
+            <p>Master thesis on machine-learning surrogates for finite element modelling.</p>
+        </main></body></html>"""
+        assert extract(html).location is None
+
+    @pytest.mark.parametrize(
+        "value,ok",
+        [
+            ("Garching bei München", True),
+            ("Berlin", True),
+            ("Berlin, Germany", True),
+            ("Freiburg im Breisgau", True),
+            ("Job Segment: Research Assistant, Intern", False),
+            ("Stellensegment: Developer, Java, Technology", False),
+            ("Keywords: machine learning, python", False),
+            # A list of five things is not a place, whatever it is inside.
+            ("Research Assistant, Industrial Engineer, Intern, Research, Engineering", False),
+            ("x" * 80, False),
+            ("", False),
+            ("   ", False),
+            ("12345", False),
+        ],
+    )
+    def test_looks_like_a_place(self, value, ok):
+        assert looks_like_a_place(value) is ok
 
     def test_reads_the_contact_email(self):
         assert extract(JOB_PAGE).contact_email == "hiwi@in.tum.de"

@@ -89,13 +89,13 @@ class TestGermanRequired:
             yield _pipeline(settings, sources_config, secrets, db)
 
     def _assess(self, **kw):
-        base = dict(
-            job_id="j1",
-            is_job_posting=True,
-            suitable_for_masters=True,
-            topics=["machine learning"],
-            score=85,
-        )
+        base = {
+            "job_id": "j1",
+            "is_job_posting": True,
+            "suitable_for_masters": True,
+            "topics": ["machine learning"],
+            "score": 85,
+        }
         return JobAssessment(**{**base, **kw})
 
     def test_a_job_requiring_german_is_dropped(self, pipe, job_factory, summary_factory):

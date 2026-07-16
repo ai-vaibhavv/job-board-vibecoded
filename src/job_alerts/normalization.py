@@ -441,6 +441,8 @@ def normalize_candidate(
         remote_status=detect_remote_status(title, location, description),
         description=description,
         url=url,
+        contact_email=strip_html(candidate.contact_email) or None,
+        contact_url=strip_html(candidate.contact_url) or None,
         published_at=published_at,
         discovered_at=now,
         application_deadline=parse_datetime(candidate.application_deadline),

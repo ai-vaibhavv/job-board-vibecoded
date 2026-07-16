@@ -49,6 +49,11 @@ class Secrets(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
 
+    apify_token: str = ""
+    """Apify, for LinkedIn post bodies a web search cannot reach. Optional: no
+    token means the posts source disables itself and every other source runs
+    exactly as before."""
+
     job_alerts_settings_file: Path = Path("config/settings.yaml")
     job_alerts_sources_file: Path = Path("config/sources.yaml")
     job_alerts_profile_file: Path = Path("config/profile.yaml")
@@ -77,6 +82,10 @@ class Secrets(BaseSettings):
     @property
     def has_llm(self) -> bool:
         return bool(self.gemini_api_key.strip() or self.groq_api_key.strip())
+
+    @property
+    def has_apify(self) -> bool:
+        return bool(self.apify_token.strip())
 
     def require_discord(self) -> str:
         if not self.has_discord:
@@ -296,7 +305,7 @@ class Settings(BaseModel):
 # Sources (config/sources.yaml)
 # ---------------------------------------------------------------------------
 
-SourceType = Literal["mock", "rss", "html", "json_api", "search_api"]
+SourceType = Literal["mock", "rss", "html", "json_api", "search_api", "linkedin_posts"]
 
 
 class SourceConfig(BaseModel):

@@ -55,6 +55,12 @@ class JobCandidate(BaseModel):
     employment_type: str | None = None
     salary: str | None = None
 
+    contact_email: str | None = None
+    contact_url: str | None = None
+    """How to apply, when the source knows. A LinkedIn post often names an
+    address and nothing else — that address is the advert. Most sources leave
+    these empty and the enricher fills them from the posting page instead."""
+
     @field_validator("title")
     @classmethod
     def _title_not_blank(cls, value: str) -> str:

@@ -21,7 +21,7 @@ import json
 
 from ..models import Job
 
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 """Bump whenever a change to this file would change a verdict.
 
 Verdicts are cached per job, so without this a rubric change would leave old
@@ -30,6 +30,8 @@ scores that cannot be reproduced from the prompt that supposedly produced them.
 Bumping invalidates the cache and everything is re-judged once.
 
 v1 -> v2: added `german_required` and `country`.
+v2 -> v3: added `is_hiring_post`, and stopped rule 1 from waving through
+          linkedin.com/posts/ URLs as "one specific posting".
 """
 
 SYSTEM_PROMPT = """\
@@ -78,6 +80,34 @@ RULES — follow exactly.
    one job slug — set is_job_posting TRUE even when you know almost nothing
    about it. Judge its RELEVANCE with the score; do not use is_job_posting to
    express "I don't have enough information".
+
+   EXCEPT for linkedin.com/posts/... — those are social posts, not job pages.
+   A URL like that is one specific *post*, which is not the same as one specific
+   *position*, so the sentence above does not apply to it. Judge it on its text,
+   and see rule 1b.
+
+1b. is_hiring_post — for social posts. An ordinary job page is self-evidently an
+   offer, so leave this true for anything that is not someone's post.
+
+   Set FALSE when the text is ABOUT a job without OFFERING one:
+     - someone announcing their own new role ("New chapter: I recently joined
+       mylantech GmbH as a Working Student in AI Automation", "Excited to
+       share that I'm starting as...", "Happy to announce")
+     - a roundup or newsletter listing many openings elsewhere ("Hot Startup
+       Positions in Munich", "63 open positions", "See which 25 other startups
+       are hiring")
+     - commentary, opinion or advice about work ("Was sind uns stabile Releases
+       wert?", career tips, industry musings)
+     - someone LOOKING for a job rather than filling one ("open to work",
+       "ich suche eine Werkstudentenstelle")
+
+   Set TRUE only when the author is offering a role someone could apply to:
+   "wir suchen", "we're hiring", "#hiring", "meldet euch per Mail", "join my
+   team", "DM me".
+
+   These matter because every one of the false cases matches the keywords
+   perfectly. "I recently joined X as a Working Student in AI" contains the
+   role, the field and the company, and is not a job.
 
 2. requires_completed_phd — THIS IS THE MOST IMPORTANT RULE.
    Set true ONLY when the posting requires a FINISHED doctorate.
@@ -206,6 +236,7 @@ Return JSON with exactly this shape, one entry per job, and nothing else:
     {{
       "job_id": "<copy the job_id exactly>",
       "is_job_posting": true,
+      "is_hiring_post": true,
       "role_type": "hiwi",
       "requires_completed_phd": false,
       "german_required": false,

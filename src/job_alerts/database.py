@@ -122,6 +122,20 @@ _MIGRATIONS: list[str] = [
     """
     UPDATE jobs SET country = NULL WHERE source = 'search_discovery';
     """,
+    # v4 — clear locations that are taxonomies wearing a location's clothes.
+    #
+    # Fraunhofer's job pages keep their tag list in `<p class="job-location">`,
+    # so enrichment trusted the class name and wrote "Job Segment: Research
+    # Assistant, Industrial Engineer, Mechanical Engineer, Intern, ..." into the
+    # location of five jobs — and into a Discord alert. `looks_like_a_place` now
+    # checks the value instead of believing the selector; this clears what the
+    # earlier version already stored. NULL, because we never learned the place.
+    """
+    UPDATE jobs SET location = NULL
+    WHERE location LIKE 'Job Segment:%'
+       OR location LIKE 'Stellensegment:%'
+       OR length(location) > 60;
+    """,
 ]
 
 
@@ -311,7 +325,32 @@ class Database:
         On conflict the row is refreshed (score/description may have improved)
         but `notified_at` and `status` are preserved — re-running a search must
         never resurrect an already-sent job into the "to notify" set.
+
+        A posting's identity is its URL, not its id. Two sources derive different
+        ids for the same page — an RSS feed uses its guid, a web search has no id
+        and falls back to a hash — and `idx_jobs_url` is UNIQUE precisely so that
+        one page cannot become two rows. But the upsert only ever conflicted on
+        `id`, so a same-URL-different-id job did not update anything: it inserted,
+        hit the unique index, and took the whole run down with an IntegrityError.
+        That was latent for as long as no two sources overlapped, and became a
+        crash the moment the TUM feed started finding pages the search already
+        knew about.
+
+        So: adopt the stored id. The row we already have IS this job, and keeping
+        its id is what keeps `notified_at` attached to it — rewriting the id
+        instead would leave `mark_notified` updating a row that no longer exists,
+        and the job would be announced again on every run forever.
         """
+        existing = self.get_by_url(job.url) if job.url else None
+        if existing and existing.id != job.id:
+            logger.debug(
+                "same url under two ids (%s -> %s); keeping the stored one: %s",
+                job.id,
+                existing.id,
+                job.url,
+            )
+            job.id = existing.id
+
         is_new = not self.is_duplicate(job)
         with self._tx() as conn:
             conn.execute(

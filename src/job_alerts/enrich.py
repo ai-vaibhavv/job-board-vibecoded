@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -237,6 +238,39 @@ def _published_at(soup: BeautifulSoup) -> datetime | None:
     return None
 
 
+# Labels that mean the element is a taxonomy, not a place. Fraunhofer's job
+# pages put their tag list inside `<p class="job-location">` — the class name
+# says location and the content says "Job Segment: Research Assistant,
+# Industrial Engineer, Mechanical Engineer, Intern, ...". Trusting the class
+# name shipped that string into the Location field of a Discord alert.
+_NOT_A_PLACE_RE = re.compile(
+    r"^\s*(job\s*segment|stellensegment|segment|kategorie|category|keywords?|tags?)\s*:",
+    re.IGNORECASE,
+)
+
+_MAX_PLACE_CHARS = 60
+
+
+def looks_like_a_place(value: str) -> bool:
+    """Is this plausibly somewhere, rather than a taxonomy that landed in a
+    field named after one?
+
+    A place is short and has few commas: "Freiburg im Breisgau", "Garching bei
+    München", "Berlin, Germany". A list of eight job categories is neither, and
+    no selector can tell the difference — only the value can.
+    """
+    text = " ".join((value or "").split())
+    if not text or len(text) > _MAX_PLACE_CHARS:
+        return False
+    if _NOT_A_PLACE_RE.match(text):
+        return False
+    # "Berlin, Germany" is fine. "Research Assistant, Industrial Engineer,
+    # Mechanical Engineer, Intern, Research" is a list wearing a place's clothes.
+    if text.count(",") > 2:
+        return False
+    return any(ch.isalpha() for ch in text)
+
+
 def _location(soup: BeautifulSoup) -> str | None:
     for selector in (
         'meta[itemprop="jobLocation"]',
@@ -245,10 +279,12 @@ def _location(soup: BeautifulSoup) -> str | None:
         ".location",
     ):
         node = soup.select_one(selector)
-        if node:
-            value = strip_html(node.get("content") or node.get_text(" ", strip=True))
-            if value:
-                return " ".join(value.split())[:120]
+        if not node:
+            continue
+        value = strip_html(node.get("content") or node.get_text(" ", strip=True))
+        value = " ".join(value.split())
+        if value and looks_like_a_place(value):
+            return value[:_MAX_PLACE_CHARS]
     return None
 
 
@@ -276,3 +312,50 @@ def _contact_url(soup: BeautifulSoup) -> str | None:
         if _APPLY_URL_RE.search(href):
             return href
     return None
+
+
+# --- plain text -------------------------------------------------------------
+#
+# A LinkedIn post has no markup — it is a paragraph someone typed. These work on
+# that, and live here so the definition of "an address worth applying to" exists
+# once rather than once per source.
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>\"'\)\]]+", re.IGNORECASE)
+
+
+def contact_email_from_text(text: str) -> str | None:
+    """The address a post says to apply to, if it names one."""
+    for match in _EMAIL_RE.finditer(text or ""):
+        if not _EMAIL_NOISE.match(match.group(0)):
+            return match.group(0).rstrip(".,;:")
+    return None
+
+
+def apply_url_from_text(text: str) -> str | None:
+    """A Google Form or similar named in the text."""
+    for match in _URL_IN_TEXT_RE.finditer(text or ""):
+        url = match.group(0).rstrip(".,;:")
+        if _APPLY_URL_RE.search(url):
+            return url
+    return None
+
+
+def outbound_links_from_text(text: str) -> list[str]:
+    """Every link in a post, in order, minus the ones that lead back to LinkedIn
+    itself.
+
+    `lnkd.in` is kept: it is LinkedIn's URL shortener, and a request to it
+    returns a redirect to somewhere else entirely — the content we end up
+    reading belongs to a university or an ATS, never to LinkedIn. Links to
+    linkedin.com proper are dropped, because following them would mean reading
+    LinkedIn, which this project does not do.
+    """
+    links: list[str] = []
+    for match in _URL_IN_TEXT_RE.finditer(text or ""):
+        url = match.group(0).rstrip(".,;:")
+        host = (urlsplit(url).hostname or "").lower()
+        if host == "linkedin.com" or host.endswith(".linkedin.com"):
+            continue
+        if url not in links:
+            links.append(url)
+    return links
