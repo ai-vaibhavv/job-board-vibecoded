@@ -10,7 +10,6 @@ from .base import BaseSource, JobSource
 from .generic_html import GenericHtmlSource, SelectorError
 from .linkedin_posts import LinkedInPostsSource, PostsUnavailable
 from .mock import MockSource
-from .research_sources import JsonApiSource
 from .rss import RssSource
 from .search_api import SearchApiSource, SearchUnavailable
 
@@ -20,7 +19,6 @@ __all__ = [
     "BaseSource",
     "GenericHtmlSource",
     "JobSource",
-    "JsonApiSource",
     "LinkedInPostsSource",
     "MockSource",
     "PostsUnavailable",
@@ -42,8 +40,6 @@ def build_source(config: SourceConfig, client: PoliteClient, secrets: Secrets) -
             return RssSource(config, client)
         case "html":
             return GenericHtmlSource(config, client)
-        case "json_api":
-            return JsonApiSource(config, client)
         case "search_api":
             return SearchApiSource(config, client, secrets)
         case "linkedin_posts":

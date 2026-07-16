@@ -4,7 +4,7 @@
 #
 # Every entry supports:
 #   name     — unique id, also stored on each job as `source`
-#   type     — mock | rss | html | json_api | search_api
+#   type     — mock | rss | html | search_api | linkedin_posts
 #   enabled  — false entries are skipped entirely
 #
 # ---------------------------------------------------------------------------
@@ -155,8 +155,7 @@ sources:
   # Rather than ship a URL that is known not to work, the field is left blank.
   # To enable: find the real feed or API URL from the EURAXESS site, put it in
   # `url`, then run `python -m job_alerts check-source euraxess_germany`.
-  # If EURAXESS serves JSON rather than RSS, switch `type` to `json_api` and
-  # add a `field_map` (see example_json_api at the bottom of this file).
+  # If EURAXESS serves JSON rather than RSS, add a small adapter for it.
   # -------------------------------------------------------------------------
   - name: euraxess_germany
     type: rss
@@ -359,27 +358,3 @@ sources:
       - '"masterarbeit" (machine learning OR "deep learning")'
       - '"wissenschaftliche hilfskraft" informatik'
     max_results_per_query: 25
-
-  # -------------------------------------------------------------------------
-  # Generic JSON API adapter. Maps an arbitrary JSON job endpoint onto the Job
-  # model via a field map. Dotted paths, `[]` walks a list.
-  # status: UNVERIFIED — example only; point it at a real endpoint.
-  # -------------------------------------------------------------------------
-  - name: example_json_api
-    type: json_api
-    enabled: false
-    url: "https://jobs.example.org/api/v1/positions?country=DE"
-    # Where the list of jobs lives inside the response.
-    items_path: "data.results"
-    field_map:
-      source_job_id: "id"
-      title: "title"
-      organization: "employer.name"
-      location: "location.city"
-      description: "description_html"
-      url: "links.self"
-      published_at: "posted_at"
-      application_deadline: "closes_at"
-      employment_type: "contract.type"
-    defaults:
-      country: Germany

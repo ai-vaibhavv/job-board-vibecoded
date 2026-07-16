@@ -85,6 +85,20 @@ class JobAssessment(BaseModel):
     `requires_completed_phd` — a mention is not a requirement."""
 
     suitable_for_masters: bool = False
+
+    core_ai_focus: bool = True
+    """True when developing/researching AI/ML/DL/CV/NLP methods is a CORE
+    objective of the role — not merely a tool applied to some other field.
+
+    The student wants core AI/ML roles, not domain-application roles that use ML
+    on another discipline's data (a history, biology, energy or materials job
+    that happens to run a model). Those are the ones that slip past every other
+    gate: they match the keywords, they are suitable for a Master's student, and
+    the model may even list "machine learning" as a topic because ML genuinely
+    appears. This flag lets the model say "the FIELD is the domain, not the
+    method" so the pipeline can reject it. Defaults True so a missing value never
+    silently drops a legitimate AI role."""
+
     seniority: str = "unknown"
     topics: list[str] = Field(default_factory=list)
     language: str = "unknown"
@@ -98,6 +112,14 @@ class JobAssessment(BaseModel):
 
     score: int = 0
     reasoning: str = ""
+
+    card_summary: str = ""
+    """A short, uniform blurb for the Discord card, written by the model in the
+    same call that scores the job. Two plain sentences (no markdown): what the
+    role is, its field, and who it suits. This is what makes every card read the
+    same length and tone; the raw posting description — sometimes thousands of
+    characters — never reaches Discord. Empty when no LLM verdict exists, in
+    which case the notifier falls back to a trimmed posting excerpt."""
 
     @field_validator("score")
     @classmethod

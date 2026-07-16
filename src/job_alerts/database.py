@@ -136,6 +136,14 @@ _MIGRATIONS: list[str] = [
        OR location LIKE 'Stellensegment:%'
        OR length(location) > 60;
     """,
+    # v5 — the LLM-written Discord card blurb.
+    #
+    # Additive, same discipline as v2: adding a column to `jobs` means touching
+    # the `Job` model, the INSERT column list and `_row_to_job` in one change.
+    # The model is `extra="forbid"`, so a half-done version fails loudly.
+    """
+    ALTER TABLE jobs ADD COLUMN card_summary TEXT;
+    """,
 ]
 
 
@@ -360,9 +368,9 @@ class Database:
                     city, remote_status, description, url, contact_email, contact_url,
                     published_at, discovered_at, enriched_at,
                     application_deadline, employment_type, language, salary,
-                    relevance_score, matched_keywords, score_explanation, content_hash,
-                    notified_at, status
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    relevance_score, matched_keywords, score_explanation, card_summary,
+                    content_hash, notified_at, status
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     title             = excluded.title,
                     organization      = excluded.organization,
@@ -377,6 +385,7 @@ class Database:
                     relevance_score   = excluded.relevance_score,
                     matched_keywords  = excluded.matched_keywords,
                     score_explanation = excluded.score_explanation,
+                    card_summary      = excluded.card_summary,
                     content_hash      = excluded.content_hash,
                     application_deadline = excluded.application_deadline
                 """,
@@ -404,6 +413,7 @@ class Database:
                     job.relevance_score,
                     json.dumps(job.matched_keywords),
                     json.dumps(job.score_explanation),
+                    job.card_summary,
                     job.content_hash,
                     _dt(job.notified_at),
                     job.status.value,
@@ -536,6 +546,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         relevance_score=row["relevance_score"],
         matched_keywords=json.loads(row["matched_keywords"] or "[]"),
         score_explanation=json.loads(row["score_explanation"] or "[]"),
+        card_summary=row["card_summary"],
         content_hash=row["content_hash"],
         notified_at=_parse_dt(row["notified_at"]),
         status=row["status"],

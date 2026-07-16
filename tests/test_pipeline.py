@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from job_alerts.config import HttpSettings, Secrets, SourceConfig, SourcesConfig
+from job_alerts.config import HttpSettings, SourceConfig, SourcesConfig
 from job_alerts.http import FetchError, PoliteClient, RobotsDisallowed
 from job_alerts.models import JobStatus
 from job_alerts.pipeline import Pipeline
@@ -194,20 +194,20 @@ class TestSourceFailureIsolation:
 
 
 class TestLlmIntegration:
-    """The LLM is an upgrade, never a dependency: with no key, a dead API, or a
-    partial answer, the run must still produce the same alerts."""
+    """The LLM is an upgrade, never a dependency: with no endpoint, a dead
+    tunnel, or a partial answer, the run must still produce the same alerts."""
 
-    GEMINI = (
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    )
+    COLAB_BASE = "https://colab.example"
+    COLAB = f"{COLAB_BASE}/v1/chat/completions"
 
-    def _gemini_for(self, jobs_scores: dict[str, int], **overrides):
-        """A Gemini mock that scores whichever job ids it is shown."""
+    def _colab_for(self, jobs_scores: dict[str, int], **overrides):
+        """A Colab (OpenAI-compatible) mock that scores whichever job ids it is
+        shown."""
         import json
 
         def side_effect(request):
             body = json.loads(request.content)
-            prompt = body["contents"][0]["parts"][0]["text"]
+            prompt = body["messages"][1]["content"]
             entries = []
             for job_id, score in jobs_scores.items():
                 if job_id in prompt:
@@ -216,6 +216,7 @@ class TestLlmIntegration:
                         "is_job_posting": True,
                         "requires_completed_phd": False,
                         "suitable_for_masters": True,
+                        "core_ai_focus": True,
                         "role_type": "hiwi",
                         "topics": ["machine learning"],
                         "score": score,
@@ -223,86 +224,78 @@ class TestLlmIntegration:
                     }
                     entry.update(overrides)
                     entries.append(entry)
-            if not entries:
-                return httpx.Response(
-                    200,
-                    json={
-                        "candidates": [{"content": {"parts": [{"text": '{"assessments": []}'}]}}]
-                    },
-                )
             text = json.dumps({"assessments": entries})
-            return httpx.Response(
-                200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]}
-            )
+            return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
 
         return side_effect
 
-    async def test_no_api_key_uses_keyword_scoring_unchanged(
+    async def test_no_endpoint_uses_keyword_scoring_unchanged(
         self, settings, sources_config, discord_secrets, db
     ):
-        """discord_secrets has no LLM key — the run must behave exactly as before."""
+        """No colab_base_url — the run must behave exactly as the keyword path."""
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
             summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
         assert summary.llm_assessed == 0
         assert summary.notified > 0  # keyword path still delivered
 
-    async def test_llm_scores_replace_keyword_scores(self, settings, sources_config, db):
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+    async def test_llm_scores_replace_keyword_scores(
+        self, settings, sources_config, discord_secrets, db
+    ):
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(
-                side_effect=self._gemini_for({f"mock:mock-00{i}": 95 for i in range(1, 9)})
+            respx.post(self.COLAB).mock(
+                side_effect=self._colab_for({f"mock:mock-00{i}": 95 for i in range(1, 9)})
             )
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
 
         assert summary.llm_assessed > 0
         job = db.get("mock:mock-001")
         assert job.relevance_score == 95
-        assert any("gemini" in line for line in job.score_explanation)
+        assert any("colab" in line for line in job.score_explanation)
 
-    async def test_llm_hard_reject_overrides_a_high_score(self, settings, sources_config, db):
+    async def test_llm_hard_reject_overrides_a_high_score(
+        self, settings, sources_config, discord_secrets, db
+    ):
         """A model that says "requires a completed PhD" then scores it 95 has
         contradicted itself. The structured field wins."""
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(
-                side_effect=self._gemini_for(
+            respx.post(self.COLAB).mock(
+                side_effect=self._colab_for(
                     {f"mock:mock-00{i}": 95 for i in range(1, 9)}, requires_completed_phd=True
                 )
             )
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
 
         assert summary.notified == 0
         assert db.get("mock:mock-001").status is JobStatus.REJECTED
 
-    async def test_llm_rejects_non_job_postings(self, settings, sources_config, db):
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+    async def test_llm_rejects_non_job_postings(
+        self, settings, sources_config, discord_secrets, db
+    ):
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(
-                side_effect=self._gemini_for(
+            respx.post(self.COLAB).mock(
+                side_effect=self._colab_for(
                     {f"mock:mock-00{i}": 95 for i in range(1, 9)}, is_job_posting=False
                 )
             )
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
         assert summary.notified == 0
 
     async def test_dead_llm_falls_back_to_keywords_and_still_notifies(
-        self, settings, sources_config, db
+        self, settings, sources_config, discord_secrets, db
     ):
         """The whole point of the fallback: an LLM outage costs nothing."""
-        secrets = Secrets(
-            _env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g", groq_api_key="q"
-        )
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(return_value=httpx.Response(429, text="quota"))
-            respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
-                return_value=httpx.Response(500)
-            )
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            respx.post(self.COLAB).mock(return_value=httpx.Response(503, text="tunnel down"))
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
 
         assert summary.llm_assessed == 0
         assert summary.llm_fallback > 0
@@ -310,14 +303,14 @@ class TestLlmIntegration:
         assert summary.llm_failures
 
     async def test_partial_llm_coverage_scores_the_rest_with_keywords(
-        self, settings, sources_config, db
+        self, settings, sources_config, discord_secrets, db
     ):
         """Only mock-001 is assessed; the others must still be scored, not lost."""
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(side_effect=self._gemini_for({"mock:mock-001": 99}))
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            respx.post(self.COLAB).mock(side_effect=self._colab_for({"mock:mock-001": 99}))
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
 
         assert summary.llm_assessed == 1
         assert summary.llm_fallback >= 1
@@ -325,30 +318,32 @@ class TestLlmIntegration:
         # A keyword-scored job still made it through.
         keyword_scored = db.get("mock:mock-002")
         assert keyword_scored.relevance_score > 0
-        assert not any("gemini" in line for line in keyword_scored.score_explanation)
+        assert not any("colab" in line for line in keyword_scored.score_explanation)
 
-    async def test_llm_disabled_in_settings_is_respected(self, settings, sources_config, db):
+    async def test_llm_disabled_in_settings_is_respected(
+        self, settings, sources_config, discord_secrets, db
+    ):
         settings.llm.enabled = False
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            route = respx.post(self.GEMINI).mock(return_value=httpx.Response(200, json={}))
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            route = respx.post(self.COLAB).mock(return_value=httpx.Response(200, json={}))
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
         assert not route.called
         assert summary.llm_assessed == 0
 
     async def test_llm_threshold_can_differ_from_keyword_threshold(
-        self, settings, sources_config, db
+        self, settings, sources_config, discord_secrets, db
     ):
         """LLM scores are calibrated differently, so they get their own knob."""
         settings.llm.min_score_to_notify = 90
-        secrets = Secrets(_env_file=None, discord_webhook_url=WEBHOOK, gemini_api_key="g")
+        settings.llm.colab_base_url = self.COLAB_BASE
         with respx.mock:
             respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
-            respx.post(self.GEMINI).mock(
-                side_effect=self._gemini_for({f"mock:mock-00{i}": 80 for i in range(1, 9)})
+            respx.post(self.COLAB).mock(
+                side_effect=self._colab_for({f"mock:mock-00{i}": 80 for i in range(1, 9)})
             )
-            summary = await Pipeline(settings, sources_config, secrets, db).run()
+            summary = await Pipeline(settings, sources_config, discord_secrets, db).run()
         # 80 clears the keyword threshold (55) but not the LLM one (90).
         assert summary.notified == 0
 

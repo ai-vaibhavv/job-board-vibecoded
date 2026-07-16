@@ -46,8 +46,11 @@ class Secrets(BaseSettings):
     search_api_key: str = ""
     google_cse_id: str = ""
 
-    gemini_api_key: str = ""
-    groq_api_key: str = ""
+    colab_api_key: str = ""
+    """Optional bearer token for a self-hosted Colab/vLLM endpoint. Usually empty
+    — a private tunnel needs no auth, and vLLM only checks a key when started
+    with `--api-key`. The endpoint URL itself lives in `settings.yaml`
+    (`llm.colab_base_url`), not here, because it is not a secret."""
 
     apify_token: str = ""
     """Apify, for LinkedIn post bodies a web search cannot reach. Optional: no
@@ -78,10 +81,6 @@ class Secrets(BaseSettings):
             return False
         # Google CSE needs both a key and an engine id; a key alone cannot query.
         return not (self.search_api_provider == "google_cse" and not self.google_cse_id.strip())
-
-    @property
-    def has_llm(self) -> bool:
-        return bool(self.gemini_api_key.strip() or self.groq_api_key.strip())
 
     @property
     def has_apify(self) -> bool:
@@ -233,11 +232,19 @@ class LlmSettings(BaseModel):
     """When true AND a key is present, the LLM judges relevance. Falls back to
     keyword scoring automatically whenever it cannot."""
 
-    providers: list[Literal["gemini", "groq"]] = Field(default_factory=lambda: ["gemini", "groq"])
-    """Preference order. The first one with a key and a working response wins."""
+    providers: list[Literal["colab"]] = Field(default_factory=lambda: ["colab"])
+    """Which LLM providers to use. Only the self-hosted `colab` provider exists;
+    it runs when `colab_base_url` is set and otherwise the run falls back to
+    keyword scoring."""
 
-    gemini_model: str = "gemini-2.5-flash"
-    groq_model: str = "llama-3.3-70b-versatile"
+    colab_base_url: str = ""
+    """Base URL of a self-hosted OpenAI-compatible server (e.g. the cloudflared
+    tunnel in front of vLLM on Colab), without the `/v1/...` path. Empty means
+    the `colab` provider is skipped even if listed in `providers`. Set it in
+    `settings.yaml`; it changes every Colab session."""
+
+    colab_model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+    """Model name the self-hosted server was started with."""
 
     batch_size: int = Field(default=10, ge=1, le=25)
     """Jobs per request. Larger = fewer calls (kinder to per-minute request
@@ -305,7 +312,7 @@ class Settings(BaseModel):
 # Sources (config/sources.yaml)
 # ---------------------------------------------------------------------------
 
-SourceType = Literal["mock", "rss", "html", "json_api", "search_api", "linkedin_posts"]
+SourceType = Literal["mock", "rss", "html", "search_api", "linkedin_posts"]
 
 
 class SourceConfig(BaseModel):
@@ -326,8 +333,6 @@ class SourceConfig(BaseModel):
     defaults: dict[str, str] = Field(default_factory=dict)
     queries: list[str] = Field(default_factory=list)
     max_results_per_query: int = 20
-    items_path: str | None = None
-    field_map: dict[str, str] = Field(default_factory=dict)
 
     allowed_domains: list[str] = Field(default_factory=list)
     """Hosts a search result must be on to be kept. Empty means no restriction.

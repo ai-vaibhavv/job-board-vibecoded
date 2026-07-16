@@ -306,32 +306,30 @@ llm:
   # rather than a job, and cannot know "Sensordatenfusion" is signal processing
   # unless you listed that exact word. An LLM does all three.
   #
-  # SAFETY: this never becomes a dependency. No key, dead API, rate limit, or
+  # SAFETY: this never becomes a dependency. No base URL, a dead tunnel, or a
   # garbled reply -> the keyword scorer takes over automatically and you still
   # get your alerts. Set enabled: false to switch it off entirely.
   enabled: true
 
-  # Tried in order; the first with an API key and a working reply wins.
-  # Keys live in .env as GEMINI_API_KEY / GROQ_API_KEY.
+  # Only the self-hosted `colab` provider exists. It runs when colab_base_url is
+  # set; otherwise the run falls back to keyword scoring.
   providers:
-    - gemini
-    - groq
+    - colab
 
-  gemini_model: gemini-2.5-flash
-  groq_model: llama-3.3-70b-versatile
+  # Self-hosted, OpenAI-compatible model — e.g. Qwen2.5-7B on Google Colab via
+  # Ollama, exposed with an ngrok tunnel. See docs/colab-model.md.
+  #
+  # colab_base_url is the tunnel root WITHOUT the /v1/... path, and it changes
+  # every Colab session. Leave empty to run on keyword scoring only. Any auth
+  # token goes in .env as COLAB_API_KEY (Ollama needs none).
+  colab_base_url: ""
+  colab_model: "qwen2.5-8k"
 
-  # Jobs per request. Bigger = fewer API calls, but a longer prompt (more tokens
-  # per call) and more lost if one batch fails.
+  # Jobs per request. Bigger = fewer calls but a longer prompt (needs a large
+  # enough num_ctx on the model) and more lost if one batch fails.
   batch_size: 10
 
-  # --- Rate limiting. These numbers are measured, not guessed. ---
-  # Free tiers are strict. A live run with max_concurrency: 2 and no pacing got
-  # 429 "quota exceeded" from Gemini AND 429 "tokens per minute" from Groq
-  # within seconds, because an 8-job prompt is ~4.7k tokens against Groq's
-  # 12k/minute limit — two requests per minute.
-  #
-  # One request at a time, spaced ~6s apart, keeps under Gemini's ~10 req/min
-  # free tier. Raise these only if you are on a paid tier.
+  # --- Pacing. One request at a time suits a single local model. ---
   max_concurrency: 1
   min_request_interval: 6.0
 

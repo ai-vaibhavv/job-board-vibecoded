@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import urllib.parse
 from typing import Any
 
 import httpx
@@ -38,6 +39,49 @@ MAX_FOOTER_TEXT = 2048
 MAX_EMBED_TOTAL = 6000
 MAX_CONTENT = 2000
 MAX_FIELDS_PER_EMBED = 25
+
+# The card description is capped to one uniform length for EVERY job, whether it
+# comes from the LLM's `card_summary` or a fallback excerpt. This is the fix for
+# "some descriptions were huge": a card is a scannable teaser, not the posting.
+# Well under Discord's 4096 embed-description cap on purpose.
+CARD_SUMMARY_MAX = 300
+
+# Known employers -> the domain whose favicon is their recognisable logo. A job
+# URL's own host is often a job-board subdomain (jobs.fraunhofer.de,
+# stellenticket.de) whose favicon is generic or missing, so for the employers we
+# see most we pin the canonical domain. Keys are matched as case-folded
+# substrings of the organization name, so only unambiguous ones are listed
+# (bare "tum"/"kit" would match inside unrelated words).
+_ORG_LOGO_DOMAINS: dict[str, str] = {
+    "fraunhofer": "fraunhofer.de",
+    "max planck": "mpg.de",
+    "max-planck": "mpg.de",
+    "technische universität münchen": "tum.de",
+    "tu münchen": "tum.de",
+    "technische universität berlin": "tu-berlin.de",
+    "tu berlin": "tu-berlin.de",
+    "dfki": "dfki.de",
+    "helmholtz": "helmholtz.de",
+    "karlsruher institut": "kit.edu",
+    "rwth": "rwth-aachen.de",
+}
+
+
+def _favicon(domain: str) -> str:
+    """Google's favicon service — a stable, no-auth logo for any domain."""
+    return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+
+
+def org_image_url(job: Job) -> str | None:
+    """A small logo for the card: a curated domain for employers we recognise,
+    otherwise the favicon of the posting's own host. None only when the job URL
+    has no usable host at all."""
+    org = (job.organization or "").casefold()
+    for needle, domain in _ORG_LOGO_DOMAINS.items():
+        if needle in org:
+            return _favicon(domain)
+    netloc = urllib.parse.urlparse(job.url).netloc.removeprefix("www.")
+    return _favicon(netloc) if netloc else None
 
 # Score -> embed colour. Purely cosmetic, but makes a channel scannable.
 _COLOR_EXCELLENT = 0x2ECC71  # green,  >= 80
@@ -90,10 +134,11 @@ def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
     """One job -> one Discord embed, guaranteed within limits."""
     title = truncate(sanitize(job.title) or "(untitled position)", MAX_EMBED_TITLE)
 
-    description = truncate(
-        sanitize(job.short_description(settings.description_excerpt_chars)),
-        MAX_EMBED_DESCRIPTION,
-    )
+    # The LLM's uniform blurb when we have one, else a trimmed posting excerpt —
+    # both capped to the SAME length so every card reads consistently and a
+    # thousand-character description never lands in the channel.
+    raw_summary = job.card_summary or job.short_description(settings.description_excerpt_chars)
+    description = truncate(sanitize(raw_summary), CARD_SUMMARY_MAX)
 
     fields: list[dict[str, Any]] = []
 
@@ -107,7 +152,8 @@ def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
                 }
             )
 
-    add_field("🏛️ Organization", sanitize(job.organization) or "—")
+    # Organization is shown in the embed `author` block (with its logo) instead
+    # of a field, so it is not repeated here.
     add_field("📍 Location", sanitize(job.location) or "—")
     add_field("⭐ Relevance", f"{job.relevance_score}/100")
     add_field("🔎 Source", sanitize(job.source))
@@ -147,6 +193,18 @@ def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
     }
     if job.published_at:
         embed["timestamp"] = job.published_at.isoformat()
+
+    # Organization identity: a small logo + name at the top (author) and the same
+    # logo top-right (thumbnail). Every card gets both — that uniform framing is
+    # what makes the channel look like one product rather than scraped rows.
+    # Image URLs do not count against the 6000-char budget; `author.name` does,
+    # and `_embed_length` already accounts for it.
+    image = org_image_url(job)
+    author_name = sanitize(job.organization) or job.source
+    embed["author"] = {"name": truncate(author_name, MAX_FIELD_NAME), "url": job.url}
+    if image:
+        embed["author"]["icon_url"] = image
+        embed["thumbnail"] = {"url": image}
 
     # Last line of defence for the 6000-char budget: drop the description
     # before dropping structured fields, since fields carry the key facts.

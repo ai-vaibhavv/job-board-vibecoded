@@ -1,8 +1,12 @@
-"""LLM assessment: providers, parsing, and the fallback guarantees.
+"""LLM assessment: the provider, parsing, and the fallback guarantees.
 
-The fallback tests matter most. An LLM outage, a rate limit, a mangled reply or
-a missing key must all degrade to keyword scoring without losing a single job.
-Every HTTP call is mocked; no test spends an API credit.
+The fallback tests matter most. A dead tunnel, a stale URL, a mangled reply or
+no configured model must all degrade to keyword scoring without losing a single
+job. Every HTTP call is mocked; no test touches a live endpoint.
+
+Only the self-hosted `colab` provider exists now. Where a test needs to exercise
+the assessor's provider-fallback loop, it wires two Colab providers at different
+URLs — the loop is general even though production lists a single provider.
 """
 
 from __future__ import annotations
@@ -13,8 +17,7 @@ import respx
 
 from job_alerts.config import LlmSettings, Secrets
 from job_alerts.llm import (
-    GeminiProvider,
-    GroqProvider,
+    ColabProvider,
     JobAssessment,
     LlmAssessor,
     LlmError,
@@ -26,17 +29,15 @@ from job_alerts.llm.providers import _extract_json
 
 from .conftest import make_job
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-)
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+COLAB_BASE = "https://colab.example"
+COLAB_URL = f"{COLAB_BASE}/v1/chat/completions"
+COLAB2_BASE = "https://colab-2.example"
+COLAB2_URL = f"{COLAB2_BASE}/v1/chat/completions"
 
 
-def gemini_reply(text: str) -> httpx.Response:
-    return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
-
-
-def groq_reply(text: str) -> httpx.Response:
+def openai_reply(text: str) -> httpx.Response:
+    """An OpenAI-compatible chat-completions reply — the shape Ollama/vLLM
+    return and the shape ColabProvider parses."""
     return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
 
 
@@ -49,6 +50,7 @@ def assessment_json(job_id: str, score: int = 85, **overrides) -> str:
         "role_type": "hiwi",
         "requires_completed_phd": False,
         "suitable_for_masters": True,
+        "core_ai_focus": True,
         "seniority": "student",
         "topics": ["machine learning"],
         "language": "en",
@@ -60,6 +62,13 @@ def assessment_json(job_id: str, score: int = 85, **overrides) -> str:
 
 
 PROMPT_KWARGS = {"topics": ["machine learning"], "locations": ["Berlin"], "all_germany": True}
+
+
+def _colab(base: str = COLAB_BASE, *, name: str | None = None, **kw) -> ColabProvider:
+    provider = ColabProvider(base, **kw)
+    if name is not None:
+        provider.name = name  # distinguish instances in fallback assertions
+    return provider
 
 
 class TestPrompt:
@@ -184,113 +193,85 @@ class TestParseAssessments:
         assert result[0].topics == ["ml", "nlp"]
 
 
-class TestGeminiProvider:
+class TestColabProvider:
+    """The self-hosted OpenAI-compatible endpoint (Qwen on Colab via Ollama)."""
+
     @respx.mock
     async def test_successful_assessment(self):
-        route = respx.post(GEMINI_URL).mock(return_value=gemini_reply(assessment_json("a")))
-        provider = GeminiProvider("secret-key", model="gemini-2.5-flash")
+        route = respx.post(COLAB_URL).mock(return_value=openai_reply(assessment_json("a", 77)))
+        provider = ColabProvider(COLAB_BASE, api_key="secret")
         try:
             result = await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
         finally:
             await provider.aclose()
-        assert result[0].score == 85
-        assert route.calls[0].request.headers["x-goog-api-key"] == "secret-key"
+        assert result[0].score == 77
+        assert route.calls[0].request.headers["Authorization"] == "Bearer secret"
+
+    def test_base_url_is_normalized_into_the_endpoint(self):
+        provider = ColabProvider(COLAB_BASE + "/")
+        assert provider.endpoint == COLAB_URL
 
     @respx.mock
-    async def test_key_is_not_in_the_url(self):
-        """A key in a query string leaks into logs and proxies."""
-        route = respx.post(GEMINI_URL).mock(return_value=gemini_reply(assessment_json("a")))
-        provider = GeminiProvider("secret-key")
+    async def test_no_api_key_sends_no_authorization_header(self):
+        route = respx.post(COLAB_URL).mock(return_value=openai_reply(assessment_json("a")))
+        provider = ColabProvider(COLAB_BASE, api_key="")
         try:
             await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
         finally:
             await provider.aclose()
-        assert "secret-key" not in str(route.calls[0].request.url)
-
-    @respx.mock
-    async def test_rate_limit_becomes_llm_error(self):
-        respx.post(GEMINI_URL).mock(return_value=httpx.Response(429, text="quota exceeded"))
-        provider = GeminiProvider("k")
-        try:
-            with pytest.raises(LlmError, match="429"):
-                await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
-        finally:
-            await provider.aclose()
-
-    @respx.mock
-    async def test_safety_block_becomes_llm_error(self):
-        respx.post(GEMINI_URL).mock(
-            return_value=httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
-        )
-        provider = GeminiProvider("k")
-        try:
-            with pytest.raises(LlmError, match="no candidates"):
-                await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
-        finally:
-            await provider.aclose()
-
-    @respx.mock
-    async def test_network_error_becomes_llm_error(self):
-        respx.post(GEMINI_URL).mock(side_effect=httpx.ConnectError("down"))
-        provider = GeminiProvider("k")
-        try:
-            with pytest.raises(LlmError, match="request failed"):
-                await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
-        finally:
-            await provider.aclose()
-
-
-class TestGroqProvider:
-    @respx.mock
-    async def test_successful_assessment(self):
-        route = respx.post(GROQ_URL).mock(return_value=groq_reply(assessment_json("a", score=70)))
-        provider = GroqProvider("groq-key")
-        try:
-            result = await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
-        finally:
-            await provider.aclose()
-        assert result[0].score == 70
-        assert route.calls[0].request.headers["Authorization"] == "Bearer groq-key"
+        assert "Authorization" not in route.calls[0].request.headers
 
     @respx.mock
     async def test_http_error_becomes_llm_error(self):
-        respx.post(GROQ_URL).mock(return_value=httpx.Response(503, text="unavailable"))
-        provider = GroqProvider("k")
+        respx.post(COLAB_URL).mock(return_value=httpx.Response(503, text="loading"))
+        provider = ColabProvider(COLAB_BASE)
         try:
             with pytest.raises(LlmError, match="503"):
                 await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
         finally:
             await provider.aclose()
 
+    @respx.mock
+    async def test_network_error_becomes_transient_llm_error(self):
+        respx.post(COLAB_URL).mock(side_effect=httpx.ConnectError("tunnel down"))
+        provider = ColabProvider(COLAB_BASE)
+        try:
+            with pytest.raises(LlmError) as excinfo:
+                await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
+        finally:
+            await provider.aclose()
+        assert excinfo.value.transient is True
+
 
 class TestProviderSelection:
-    def test_order_follows_settings(self):
-        secrets = Secrets(_env_file=None, gemini_api_key="g", groq_api_key="q")
-        providers = build_providers(secrets, LlmSettings(providers=["groq", "gemini"]))
-        assert [p.name for p in providers] == ["groq", "gemini"]
+    def test_colab_is_built_when_a_base_url_is_set(self):
+        providers = build_providers(
+            Secrets(_env_file=None), LlmSettings(providers=["colab"], colab_base_url=COLAB_BASE)
+        )
+        assert [p.name for p in providers] == ["colab"]
 
-    def test_providers_without_a_key_are_skipped(self):
-        secrets = Secrets(_env_file=None, gemini_api_key="", groq_api_key="q")
-        providers = build_providers(secrets, LlmSettings())
-        assert [p.name for p in providers] == ["groq"]
+    def test_colab_is_skipped_without_a_base_url(self):
+        assert build_providers(Secrets(_env_file=None), LlmSettings(providers=["colab"])) == []
 
-    def test_no_keys_means_no_providers(self):
-        providers = build_providers(Secrets(_env_file=None), LlmSettings())
-        assert providers == []
+    def test_default_settings_list_only_colab(self):
+        assert LlmSettings().providers == ["colab"]
 
-    def test_has_llm_reflects_either_key(self):
-        assert Secrets(_env_file=None).has_llm is False
-        assert Secrets(_env_file=None, gemini_api_key="g").has_llm is True
-        assert Secrets(_env_file=None, groq_api_key="q").has_llm is True
+    def test_optional_token_is_passed_through(self):
+        secrets = Secrets(_env_file=None, colab_api_key="tok")
+        providers = build_providers(
+            secrets, LlmSettings(providers=["colab"], colab_base_url=COLAB_BASE)
+        )
+        assert providers[0].api_key == "tok"
 
 
-class TestFallbackChain:
-    """The headline guarantee: Gemini -> Groq -> keyword scoring, seamlessly."""
+class TestAssessorFallback:
+    """The headline guarantee: a working provider is used, and any failure
+    degrades to {} so the caller scores those jobs with keywords instead."""
 
     def _assessor(self, providers, **kw):
         # Pacing and backoff are disabled here: they are real sleeps, and a
-        # suite that waits 20s per rate-limit test is a suite nobody runs.
-        # `TestPacingAndRetry` covers the timing behaviour explicitly instead.
+        # suite that waits per test is a suite nobody runs. `TestPacingAndRetry`
+        # covers the timing behaviour explicitly instead.
         kw.setdefault("min_request_interval", 0.0)
         kw.setdefault("retry_base_delay", 0.0)
         kw.setdefault("max_retries", 0)
@@ -303,44 +284,44 @@ class TestFallbackChain:
         )
 
     @respx.mock
-    async def test_gemini_is_preferred_when_it_works(self):
-        gemini = respx.post(GEMINI_URL).mock(return_value=gemini_reply(assessment_json("a", 90)))
-        groq = respx.post(GROQ_URL).mock(return_value=groq_reply(assessment_json("a", 10)))
-
-        assessor = self._assessor([GeminiProvider("g"), GroqProvider("q")])
+    async def test_the_provider_result_is_used(self):
+        route = respx.post(COLAB_URL).mock(return_value=openai_reply(assessment_json("a", 90)))
+        assessor = self._assessor([_colab(name="colab")])
         try:
             result = await assessor.assess_all([make_job(id="a")])
         finally:
             await assessor.aclose()
-
         assert result["a"].score == 90
-        assert gemini.called and not groq.called
-        assert assessor.provider_used["a"] == "gemini"
+        assert route.called
+        assert assessor.provider_used["a"] == "colab"
 
     @respx.mock
-    async def test_groq_takes_over_when_gemini_fails(self):
-        """The core requirement: a Gemini error must transparently become Groq."""
-        gemini = respx.post(GEMINI_URL).mock(return_value=httpx.Response(429, text="quota"))
-        groq = respx.post(GROQ_URL).mock(return_value=groq_reply(assessment_json("a", 75)))
+    async def test_a_second_provider_takes_over_when_the_first_fails(self):
+        """The assessor tries providers in order; a failure must transparently
+        fall through to the next one."""
+        first = respx.post(COLAB_URL).mock(return_value=httpx.Response(503, text="down"))
+        second = respx.post(COLAB2_URL).mock(return_value=openai_reply(assessment_json("a", 75)))
 
-        assessor = self._assessor([GeminiProvider("g"), GroqProvider("q")])
+        assessor = self._assessor(
+            [_colab(COLAB_BASE, name="primary"), _colab(COLAB2_BASE, name="secondary")]
+        )
         try:
             result = await assessor.assess_all([make_job(id="a")])
         finally:
             await assessor.aclose()
 
-        assert gemini.called and groq.called
+        assert first.called and second.called
         assert result["a"].score == 75
-        assert assessor.provider_used["a"] == "groq"
-        assert any("gemini" in f for f in assessor.failures)
+        assert assessor.provider_used["a"] == "secondary"
+        assert any("primary" in f for f in assessor.failures)
 
     @respx.mock
-    async def test_both_failing_yields_nothing_not_an_exception(self):
+    async def test_all_providers_failing_yields_nothing_not_an_exception(self):
         """Callers rely on {} meaning "score these with keywords instead"."""
-        respx.post(GEMINI_URL).mock(return_value=httpx.Response(500))
-        respx.post(GROQ_URL).mock(return_value=httpx.Response(500))
+        respx.post(COLAB_URL).mock(return_value=httpx.Response(500))
+        respx.post(COLAB2_URL).mock(return_value=httpx.Response(500))
 
-        assessor = self._assessor([GeminiProvider("g"), GroqProvider("q")])
+        assessor = self._assessor([_colab(COLAB_BASE, name="a"), _colab(COLAB2_BASE, name="b")])
         try:
             result = await assessor.assess_all([make_job(id="a")])
         finally:
@@ -349,45 +330,44 @@ class TestFallbackChain:
 
     @respx.mock
     async def test_a_garbage_reply_falls_through_to_the_next_provider(self):
-        respx.post(GEMINI_URL).mock(return_value=gemini_reply("I'm afraid I can't do that."))
-        groq = respx.post(GROQ_URL).mock(return_value=groq_reply(assessment_json("a", 60)))
+        respx.post(COLAB_URL).mock(return_value=openai_reply("I'm afraid I can't do that."))
+        second = respx.post(COLAB2_URL).mock(return_value=openai_reply(assessment_json("a", 60)))
 
-        assessor = self._assessor([GeminiProvider("g"), GroqProvider("q")])
+        assessor = self._assessor([_colab(COLAB_BASE, name="a"), _colab(COLAB2_BASE, name="b")])
         try:
             result = await assessor.assess_all([make_job(id="a")])
         finally:
             await assessor.aclose()
-        assert groq.called
+        assert second.called
         assert result["a"].score == 60
 
     @respx.mock
     async def test_batches_fall_back_independently(self):
-        """Gemini dying on batch 2 must not discard batch 1's good answers."""
+        """The first provider dying on batch 2 must not discard batch 1's good
+        answers; the second provider fills only what is missing."""
         import json
 
         jobs = [make_job(id=f"j{i}", url=f"https://e.de/{i}") for i in range(4)]
 
-        def gemini_side_effect(request):
-            body = json.loads(request.content)
-            text = body["contents"][0]["parts"][0]["text"]
+        def primary_side_effect(request):
+            text = json.loads(request.content)["messages"][1]["content"]
             if "j0" in text:  # first batch succeeds
-                return gemini_reply(assessment_json("j0", 90))
-            return httpx.Response(429, text="quota")
+                return openai_reply(assessment_json("j0", 90))
+            return httpx.Response(503, text="down")
 
-        respx.post(GEMINI_URL).mock(side_effect=gemini_side_effect)
+        respx.post(COLAB_URL).mock(side_effect=primary_side_effect)
 
-        def groq_side_effect(request):
-            body = json.loads(request.content)
-            text = body["messages"][1]["content"]
+        def secondary_side_effect(request):
+            text = json.loads(request.content)["messages"][1]["content"]
             for i in (1, 2, 3):
                 if f"j{i}" in text:
-                    return groq_reply(assessment_json(f"j{i}", 50))
+                    return openai_reply(assessment_json(f"j{i}", 50))
             return httpx.Response(500)
 
-        respx.post(GROQ_URL).mock(side_effect=groq_side_effect)
+        respx.post(COLAB2_URL).mock(side_effect=secondary_side_effect)
 
         assessor = LlmAssessor(
-            [GeminiProvider("g"), GroqProvider("q")],
+            [_colab(COLAB_BASE, name="primary"), _colab(COLAB2_BASE, name="secondary")],
             LlmSettings(
                 batch_size=1,
                 max_concurrency=1,
@@ -404,10 +384,10 @@ class TestFallbackChain:
         finally:
             await assessor.aclose()
 
-        assert result["j0"].score == 90  # from gemini
-        assert assessor.provider_used["j0"] == "gemini"
-        assert result["j1"].score == 50  # from groq
-        assert assessor.provider_used["j1"] == "groq"
+        assert result["j0"].score == 90  # from primary
+        assert assessor.provider_used["j0"] == "primary"
+        assert result["j1"].score == 50  # from secondary
+        assert assessor.provider_used["j1"] == "secondary"
 
     async def test_no_providers_yields_nothing(self):
         assessor = self._assessor([])
@@ -415,7 +395,7 @@ class TestFallbackChain:
         assert assessor.available is False
 
     async def test_empty_job_list_makes_no_calls(self):
-        assessor = self._assessor([GeminiProvider("g")])
+        assessor = self._assessor([_colab(name="colab")])
         try:
             assert await assessor.assess_all([]) == {}
         finally:
@@ -423,9 +403,8 @@ class TestFallbackChain:
 
 
 class TestPacingAndRetry:
-    """Rate limiting is not hypothetical: measured live, an 8-job prompt is
-    ~4.7k tokens against Groq's 12k tokens/minute, and two unpaced concurrent
-    requests got an immediate 429 from both providers."""
+    """Pacing keeps a single local GPU from queueing overlapping requests, and
+    transient failures are retried while permanent ones are not."""
 
     def _assessor(self, providers, **kw):
         return LlmAssessor(
@@ -440,9 +419,9 @@ class TestPacingAndRetry:
     async def test_requests_to_one_provider_are_spaced_out(self):
         import time
 
-        respx.post(GEMINI_URL).mock(side_effect=lambda request: gemini_reply(assessment_json("j0")))
+        respx.post(COLAB_URL).mock(side_effect=lambda request: openai_reply(assessment_json("j0")))
         jobs = [make_job(id="j0")]
-        assessor = self._assessor([GeminiProvider("g")], min_request_interval=0.3)
+        assessor = self._assessor([_colab(name="colab")], min_request_interval=0.3)
         try:
             started = time.monotonic()
             await assessor.assess_all(jobs)
@@ -456,8 +435,8 @@ class TestPacingAndRetry:
     async def test_pacing_can_be_disabled(self):
         import time
 
-        respx.post(GEMINI_URL).mock(return_value=gemini_reply(assessment_json("j0")))
-        assessor = self._assessor([GeminiProvider("g")], min_request_interval=0.0)
+        respx.post(COLAB_URL).mock(return_value=openai_reply(assessment_json("j0")))
+        assessor = self._assessor([_colab(name="colab")], min_request_interval=0.0)
         try:
             started = time.monotonic()
             await assessor.assess_all([make_job(id="j0")])
@@ -466,37 +445,37 @@ class TestPacingAndRetry:
             await assessor.aclose()
 
     @respx.mock
-    async def test_transient_failure_on_all_providers_is_retried(self):
-        """A 429 from everyone means "wait", not "give up"."""
-        gemini = respx.post(GEMINI_URL).mock(
+    async def test_transient_failure_is_retried(self):
+        """A 503 (model still loading) means "wait", not "give up"."""
+        route = respx.post(COLAB_URL).mock(
             side_effect=[
-                httpx.Response(429, text="quota"),
-                gemini_reply(assessment_json("j0", 77)),
+                httpx.Response(503, text="loading"),
+                openai_reply(assessment_json("j0", 77)),
             ]
         )
         assessor = self._assessor(
-            [GeminiProvider("g")], min_request_interval=0.0, retry_base_delay=0.01, max_retries=2
+            [_colab(name="colab")], min_request_interval=0.0, retry_base_delay=0.01, max_retries=2
         )
         try:
             result = await assessor.assess_all([make_job(id="j0")])
         finally:
             await assessor.aclose()
-        assert gemini.call_count == 2
+        assert route.call_count == 2
         assert result["j0"].score == 77
 
     @respx.mock
     async def test_permanent_failure_is_not_retried(self):
-        """A bad API key fails identically forever — retrying just delays the
-        fallback and wastes the user's time."""
-        gemini = respx.post(GEMINI_URL).mock(return_value=httpx.Response(401, text="bad key"))
+        """A 400 fails identically forever — retrying just delays the keyword
+        fallback and wastes time."""
+        route = respx.post(COLAB_URL).mock(return_value=httpx.Response(400, text="bad request"))
         assessor = self._assessor(
-            [GeminiProvider("g")], min_request_interval=0.0, retry_base_delay=0.01, max_retries=3
+            [_colab(name="colab")], min_request_interval=0.0, retry_base_delay=0.01, max_retries=3
         )
         try:
             result = await assessor.assess_all([make_job(id="j0")])
         finally:
             await assessor.aclose()
-        assert gemini.call_count == 1  # tried once, not four times
+        assert route.call_count == 1  # tried once, not four times
         assert result == {}
 
     @pytest.mark.parametrize(
@@ -505,8 +484,8 @@ class TestPacingAndRetry:
     )
     @respx.mock
     async def test_status_codes_are_classified_correctly(self, status, transient):
-        respx.post(GEMINI_URL).mock(return_value=httpx.Response(status, text="x"))
-        provider = GeminiProvider("k")
+        respx.post(COLAB_URL).mock(return_value=httpx.Response(status, text="x"))
+        provider = ColabProvider(COLAB_BASE)
         try:
             with pytest.raises(LlmError) as excinfo:
                 await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
@@ -516,9 +495,9 @@ class TestPacingAndRetry:
 
     @respx.mock
     async def test_malformed_json_is_transient(self):
-        """Seen live from Gemini. The same prompt often parses on a retry."""
-        respx.post(GEMINI_URL).mock(return_value=gemini_reply('{"assessments": [{"a":,}]}'))
-        provider = GeminiProvider("k")
+        """A truncated reply often parses on a retry (e.g. after num_ctx warms)."""
+        respx.post(COLAB_URL).mock(return_value=openai_reply('{"assessments": [{"a":,}]}'))
+        provider = ColabProvider(COLAB_BASE)
         try:
             with pytest.raises(LlmError) as excinfo:
                 await provider.assess([make_job(id="a")], **PROMPT_KWARGS)
@@ -528,11 +507,11 @@ class TestPacingAndRetry:
 
     @respx.mock
     async def test_repeated_failures_are_deduplicated_in_the_summary(self):
-        """Ten batches hitting one 429 is one problem, not ten lines."""
-        respx.post(GEMINI_URL).mock(return_value=httpx.Response(429, text="quota exceeded"))
+        """Ten batches hitting one 503 is one problem, not ten lines."""
+        respx.post(COLAB_URL).mock(return_value=httpx.Response(503, text="loading"))
         jobs = [make_job(id=f"j{i}", url=f"https://e.de/{i}") for i in range(5)]
         assessor = self._assessor(
-            [GeminiProvider("g")], min_request_interval=0.0, retry_base_delay=0.0, max_retries=0
+            [_colab(name="colab")], min_request_interval=0.0, retry_base_delay=0.0, max_retries=0
         )
         try:
             await assessor.assess_all(jobs)
@@ -546,13 +525,13 @@ class TestAssessmentRendering:
         a = JobAssessment(
             job_id="a", score=88, reasoning="HiWi in ML.", topics=["machine learning"]
         )
-        lines = a.explanation("gemini")
-        assert "gemini" in lines[0]
+        lines = a.explanation("colab")
+        assert "colab" in lines[0]
         assert "88" in lines[0]
         assert "HiWi in ML." in lines[0]
 
     def test_explanation_surfaces_hard_rejects(self):
         a = JobAssessment(job_id="a", score=5, requires_completed_phd=True, is_job_posting=False)
-        text = " ".join(a.explanation("groq"))
+        text = " ".join(a.explanation("colab"))
         assert "completed PhD" in text
         assert "not an individual job posting" in text

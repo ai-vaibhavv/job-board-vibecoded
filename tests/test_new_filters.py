@@ -204,3 +204,72 @@ class TestCountry:
             job = job_factory(id="j1")
             out = pipe._apply_scores([job], {"j1": self._assess("Austria")}, summary_factory())
         assert out == [job]
+
+
+class TestCoreAiAndThesis:
+    """The Phase 6 sharpening: no Master's-thesis roles, and no domain jobs that
+    merely apply ML. Both are structured LLM fields the pipeline now gates on."""
+
+    @pytest.fixture
+    def pipe(self, settings, sources_config, secrets, tmp_path):
+        with Database(tmp_path / "t.db") as db:
+            yield _pipeline(settings, sources_config, secrets, db)
+
+    def _assess(self, **kw):
+        base = {
+            "job_id": "j1",
+            "is_job_posting": True,
+            "suitable_for_masters": True,
+            "topics": ["machine learning"],
+            "core_ai_focus": True,
+            "score": 85,
+        }
+        return JobAssessment(**{**base, **kw})
+
+    def test_a_master_thesis_role_is_dropped(self, pipe, job_factory, summary_factory):
+        job = job_factory(id="j1")
+        out = pipe._apply_scores(
+            [job], {"j1": self._assess(role_type="master_thesis")}, summary_factory()
+        )
+        assert out == []
+        assert any("Master's thesis" in r for r in job.score_explanation)
+
+    def test_a_hiwi_role_is_kept(self, pipe, job_factory, summary_factory):
+        job = job_factory(id="j1")
+        out = pipe._apply_scores([job], {"j1": self._assess(role_type="hiwi")}, summary_factory())
+        assert out == [job]
+
+    def test_a_domain_role_that_only_applies_ml_is_dropped(
+        self, pipe, job_factory, summary_factory
+    ):
+        """A history/energy/biology position that runs a model is not a core AI
+        role, even though it scored high and 'machine learning' is a topic."""
+        job = job_factory(id="j1")
+        out = pipe._apply_scores([job], {"j1": self._assess(core_ai_focus=False)}, summary_factory())
+        assert out == []
+        assert any("core AI/ML" in r for r in job.score_explanation)
+
+    def test_a_core_ai_role_is_kept(self, pipe, job_factory, summary_factory):
+        job = job_factory(id="j1")
+        out = pipe._apply_scores([job], {"j1": self._assess(core_ai_focus=True)}, summary_factory())
+        assert out == [job]
+
+    def test_core_ai_focus_defaults_true_so_old_verdicts_survive(
+        self, pipe, job_factory, summary_factory
+    ):
+        """A cached verdict from before the field existed omits it; the default
+        must not silently reject a legitimate AI role."""
+        assessment = JobAssessment(
+            job_id="j1", is_job_posting=True, suitable_for_masters=True,
+            topics=["machine learning"], score=85,
+        )
+        assert assessment.core_ai_focus is True
+        job = job_factory(id="j1")
+        assert pipe._apply_scores([job], {"j1": assessment}, summary_factory()) == [job]
+
+    def test_card_summary_is_stashed_onto_the_job(self, pipe, job_factory, summary_factory):
+        job = job_factory(id="j1")
+        pipe._apply_scores(
+            [job], {"j1": self._assess(card_summary="A HiWi in ML at TU Munich.")}, summary_factory()
+        )
+        assert job.card_summary == "A HiWi in ML at TU Munich."

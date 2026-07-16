@@ -312,9 +312,15 @@ class Pipeline:
         return jobs
 
     @property
+    def _llm_configured(self) -> bool:
+        """The LLM path can run at all: a self-hosted Colab base URL is set.
+        Without it, only keyword scoring runs."""
+        return bool(self.settings.llm.colab_base_url.strip())
+
+    @property
     def _llm_prefilter_enabled(self) -> bool:
         llm = self.settings.llm
-        return not (llm.enabled and self.secrets.has_llm) or llm.prefilter_with_keywords
+        return not (llm.enabled and self._llm_configured) or llm.prefilter_with_keywords
 
     def _cached_assessments(self, jobs: list[Job]) -> dict[str, JobAssessment]:
         """Verdicts already paid for, for jobs whose text has not changed.
@@ -344,10 +350,10 @@ class Pipeline:
         if not llm.enabled:
             logger.debug("llm assessment disabled in settings")
             return {}
-        if not self.secrets.has_llm:
+        if not self._llm_configured:
             logger.info(
-                "no GEMINI_API_KEY or GROQ_API_KEY set — using keyword scoring "
-                "(set one in .env for better filtering)"
+                "no LLM configured (llm.colab_base_url is empty) — using keyword "
+                "scoring (set it for better filtering; see docs/colab-model.md)"
             )
             return {}
         if not jobs:
@@ -473,6 +479,7 @@ class Pipeline:
                 provider = getattr(self, "_llm_provider_used", {}).get(job.id, "llm")
                 job.relevance_score = assessment.score
                 job.score_explanation = assessment.explanation(provider)
+                job.card_summary = assessment.card_summary or None
                 if assessment.topics:
                     # The LLM's topic reading is better than the regex's: it
                     # maps "Softwareentwicklung" onto "software engineering".
@@ -500,6 +507,14 @@ class Pipeline:
                     hard_reject = reject
                 elif not assessment.suitable_for_masters:
                     hard_reject = "not suitable for a Master's student"
+                elif assessment.role_type == "master_thesis":
+                    # The student does not want thesis-only postings. role_type is
+                    # the model's own structured label; trust it over the score.
+                    hard_reject = "Master's thesis role, not wanted"
+                elif not assessment.core_ai_focus:
+                    # A role whose real field is another discipline that merely
+                    # applies ML. Wanted: core AI/ML/DL/CV/NLP work.
+                    hard_reject = "not a core AI/ML role (domain merely applies ML)"
                 elif not assessment.topics and job.relevance_score > _NO_TOPIC_SCORE_CAP:
                     # Anti-inflation, using the model's own structured claim
                     # against its own number. Observed live: "HiWi role in

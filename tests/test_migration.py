@@ -186,13 +186,13 @@ class TestV2Enrichment:
             db.upsert(job_factory(id="j1"))
             assert db.get_assessment("j1", "hash1", 1) is None
 
-            db.save_assessment("j1", "hash1", 1, {"score": 80, "role_type": "hiwi"}, "gemini")
+            db.save_assessment("j1", "hash1", 1, {"score": 80, "role_type": "hiwi"}, "colab")
             assert db.get_assessment("j1", "hash1", 1) == {"score": 80, "role_type": "hiwi"}
 
     def test_an_edited_posting_invalidates_its_verdict(self, tmp_path, job_factory):
         with Database(tmp_path / "jobs.db") as db:
             db.upsert(job_factory(id="j1"))
-            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "colab")
             # Same job, new content -> the old verdict must not be reused.
             assert db.get_assessment("j1", "hash2", 1) is None
 
@@ -201,14 +201,14 @@ class TestV2Enrichment:
         reproducible."""
         with Database(tmp_path / "jobs.db") as db:
             db.upsert(job_factory(id="j1"))
-            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "colab")
             assert db.get_assessment("j1", "hash1", 2) is None
 
     def test_reassessing_replaces_rather_than_duplicates(self, tmp_path, job_factory):
         with Database(tmp_path / "jobs.db") as db:
             db.upsert(job_factory(id="j1"))
-            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
-            db.save_assessment("j1", "hash2", 1, {"score": 40}, "groq")
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "colab")
+            db.save_assessment("j1", "hash2", 1, {"score": 40}, "colab")
             assert db.get_assessment("j1", "hash2", 1) == {"score": 40}
             count = db._conn.execute("SELECT count(*) FROM job_assessments").fetchone()[0]
             assert count == 1
@@ -218,7 +218,7 @@ class TestV2Enrichment:
         after migrate() rather than never."""
         with Database(tmp_path / "jobs.db") as db:
             db.upsert(job_factory(id="j1"))
-            db.save_assessment("j1", "hash1", 1, {"score": 80}, "gemini")
+            db.save_assessment("j1", "hash1", 1, {"score": 80}, "colab")
 
             with db._tx() as conn:
                 conn.execute("DELETE FROM jobs WHERE id = 'j1'")
@@ -230,7 +230,7 @@ class TestV2Enrichment:
         """The cache is keyed to real jobs; a dangling verdict is a bug, and the
         foreign key is what says so instead of letting it rot in the table."""
         with Database(tmp_path / "jobs.db") as db, pytest.raises(sqlite3.IntegrityError):
-            db.save_assessment("ghost", "hash1", 1, {"score": 80}, "gemini")
+            db.save_assessment("ghost", "hash1", 1, {"score": 80}, "colab")
 
 
 class TestV3CountryRetraction:

@@ -131,6 +131,11 @@ class Job(BaseModel):
     "+30 exact title match: 'research assistant'". Stored so a score can
     always be justified after the fact."""
 
+    card_summary: str | None = None
+    """A short, uniform blurb the LLM wrote for the Discord card (see
+    `JobAssessment.card_summary`). None when there was no LLM verdict; the
+    notifier then falls back to a trimmed posting excerpt."""
+
     content_hash: str
     """Hash of the meaningful content. Changes when a posting is edited,
     which lets us tell a genuinely updated job from a duplicate."""

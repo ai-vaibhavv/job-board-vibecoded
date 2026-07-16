@@ -10,6 +10,7 @@ import respx
 
 from job_alerts.config import NotificationSettings
 from job_alerts.notifications.discord import (
+    CARD_SUMMARY_MAX,
     MAX_EMBED_TITLE,
     MAX_EMBED_TOTAL,
     MAX_EMBEDS_PER_MESSAGE,
@@ -17,6 +18,7 @@ from job_alerts.notifications.discord import (
     _embed_length,
     build_embed,
     build_messages,
+    org_image_url,
     render_dry_run,
     sanitize,
     truncate,
@@ -65,8 +67,62 @@ class TestEmbedLimits:
 
     def test_description_is_excerpted_to_the_configured_length(self, notify_settings):
         embed = build_embed(make_job(description="word " * 5000), notify_settings)
-        # Excerpt + the ellipsis and escaping overhead.
-        assert len(embed["description"]) <= notify_settings.description_excerpt_chars + 10
+        # Every card is capped to one uniform length, regardless of config.
+        assert len(embed["description"]) <= CARD_SUMMARY_MAX
+
+
+class TestCardRedesign:
+    """Consistent, image-rich cards: an LLM blurb capped to one length for every
+    job, and an organization logo."""
+
+    def test_card_summary_is_used_as_the_description(self, notify_settings):
+        job = make_job(
+            card_summary="Student research assistant in computer vision at TU Munich.",
+            description="A" * 4000,  # the raw posting must NOT be what shows.
+        )
+        embed = build_embed(job, notify_settings)
+        assert "computer vision" in embed["description"]
+        assert "AAAA" not in embed["description"]
+
+    def test_a_long_summary_is_capped_uniformly(self, notify_settings):
+        embed = build_embed(make_job(card_summary="ml role. " * 200), notify_settings)
+        assert len(embed["description"]) <= CARD_SUMMARY_MAX
+
+    def test_without_a_summary_it_falls_back_to_a_capped_excerpt(self, notify_settings):
+        job = make_job(card_summary=None, description="Machine learning HiWi. " * 200)
+        embed = build_embed(job, notify_settings)
+        assert embed["description"]
+        assert len(embed["description"]) <= CARD_SUMMARY_MAX
+
+    def test_a_known_org_gets_a_curated_logo(self):
+        job = make_job(organization="Fraunhofer FKIE", url="https://jobs.fraunhofer.de/x")
+        assert "fraunhofer.de" in (org_image_url(job) or "")
+
+    def test_an_unknown_org_falls_back_to_the_url_host(self):
+        job = make_job(organization="Acme Robotics GmbH", url="https://careers.acme-robotics.de/1")
+        assert "careers.acme-robotics.de" in (org_image_url(job) or "")
+
+    def test_the_embed_carries_an_author_and_thumbnail(self, notify_settings):
+        job = make_job(organization="Fraunhofer FKIE", url="https://jobs.fraunhofer.de/x")
+        embed = build_embed(job, notify_settings)
+        assert embed["author"]["name"]
+        assert embed["author"]["icon_url"]
+        assert embed["thumbnail"]["url"]
+
+    def test_organization_is_not_also_a_field(self, notify_settings):
+        """It lives in the author block now; duplicating it as a field was the
+        redundancy the redesign removes."""
+        embed = build_embed(make_job(organization="TU Munich"), notify_settings)
+        assert not any("Organization" in f["name"] for f in embed["fields"])
+
+    def test_image_rich_card_still_respects_the_total_budget(self, notify_settings):
+        job = make_job(
+            organization="Institute " * 100,
+            card_summary="ml. " * 200,
+            matched_keywords=[f"k{i}" for i in range(100)],
+        )
+        embed = build_embed(job, notify_settings)
+        assert _embed_length(embed) <= MAX_EMBED_TOTAL
 
     def test_never_more_than_ten_embeds_per_message(self, notify_settings):
         notify_settings.embeds_per_message = 10

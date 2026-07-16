@@ -115,95 +115,36 @@ def parse_assessments(
     return list(by_id.values())
 
 
-class GeminiProvider:
-    """Google Gemini via the Generative Language API.
+class ColabProvider:
+    """A self-hosted, OpenAI-compatible model — e.g. Qwen2.5-7B served by Ollama
+    on Google Colab and reached through an ngrok tunnel. See docs/colab-model.md.
 
-    Uses the `x-goog-api-key` header rather than the `?key=` query parameter the
-    quickstart shows: a key in a URL leaks into logs, proxies and error
-    messages. Same reason as Tavily's Bearer auth.
+    It issues an ordinary chat-completions request and reads the reply from
+    `choices[0].message.content`, with two deliberate choices:
+
+    * `endpoint` is built from a per-session base URL (the tunnel address changes
+      every time the notebook restarts), not a fixed class constant.
+    * `response_format` is omitted. Some local servers do not support JSON mode,
+      and `_extract_json` already recovers JSON from a plain-text or fenced
+      reply — so depending on the field would only add a way to fail.
+
+    `api_key` is optional: a private tunnel usually needs no auth (Ollama checks
+    none). When empty, no Authorization header is sent.
     """
 
-    name = "gemini"
+    name = "colab"
 
     def __init__(
         self,
-        api_key: str,
+        base_url: str,
         *,
-        model: str = "gemini-2.5-flash",
+        api_key: str = "",
+        model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ",
         timeout: float = 60.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.api_key = api_key
-        self.model = model
-        self._client = client or httpx.AsyncClient(timeout=timeout)
-        self._owns_client = client is None
-
-    @property
-    def endpoint(self) -> str:
-        return (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        )
-
-    async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
-
-    async def assess(self, jobs: list[Job], **prompt_kwargs: Any) -> list[JobAssessment]:
-        prompt = build_user_prompt(jobs, **prompt_kwargs)
-        body = {
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                # Deterministic: the same posting must not score 80 today and 55
-                # tomorrow, or dedup/threshold behaviour becomes unexplainable.
-                "temperature": 0.0,
-                "responseMimeType": "application/json",
-                "maxOutputTokens": 8192,
-            },
-        }
-        try:
-            response = await self._client.post(
-                self.endpoint,
-                json=body,
-                headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            # Network trouble is by definition worth another go.
-            raise LlmError(f"gemini request failed: {exc}", transient=True) from exc
-
-        if response.status_code != 200:
-            raise _http_error("gemini", response)
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise LlmError(f"gemini returned non-JSON: {exc}") from exc
-
-        candidates = payload.get("candidates") or []
-        if not candidates:
-            # Usually a safety block or an empty generation.
-            feedback = payload.get("promptFeedback", {})
-            raise LlmError(f"gemini returned no candidates (feedback: {feedback})", transient=True)
-
-        parts = (candidates[0].get("content") or {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts)
-        return parse_assessments(_extract_json(text), jobs, self.name)
-
-
-class GroqProvider:
-    """Groq, via its OpenAI-compatible chat-completions endpoint."""
-
-    name = "groq"
-    endpoint = "https://api.groq.com/openai/v1/chat/completions"
-
-    def __init__(
-        self,
-        api_key: str,
-        *,
-        model: str = "llama-3.3-70b-versatile",
-        timeout: float = 60.0,
-        client: httpx.AsyncClient | None = None,
-    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.endpoint = f"{self.base_url}/v1/chat/completions"
         self.api_key = api_key
         self.model = model
         self._client = client or httpx.AsyncClient(timeout=timeout)
@@ -222,31 +163,26 @@ class GroqProvider:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.0,
-            "response_format": {"type": "json_object"},
         }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
-            response = await self._client.post(
-                self.endpoint,
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
+            response = await self._client.post(self.endpoint, json=body, headers=headers)
         except httpx.HTTPError as exc:
-            raise LlmError(f"groq request failed: {exc}", transient=True) from exc
+            raise LlmError(f"colab request failed: {exc}", transient=True) from exc
 
         if response.status_code != 200:
-            raise _http_error("groq", response)
+            raise _http_error("colab", response)
 
         try:
             payload = response.json()
         except ValueError as exc:
-            raise LlmError(f"groq returned non-JSON: {exc}") from exc
+            raise LlmError(f"colab returned non-JSON: {exc}") from exc
 
         choices = payload.get("choices") or []
         if not choices:
-            raise LlmError("groq returned no choices")
+            raise LlmError("colab returned no choices")
         text = (choices[0].get("message") or {}).get("content") or ""
         return parse_assessments(_extract_json(text), jobs, self.name)
 

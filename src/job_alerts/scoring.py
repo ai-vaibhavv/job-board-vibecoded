@@ -31,11 +31,9 @@ _STUDENT_TITLE_KEYWORDS = (
     "intern",
     "praktikum",
     "praktikant",
-    "thesis",
-    "masterarbeit",
-    "abschlussarbeit",
-    "bachelorarbeit",
-    "master",
+    # Thesis / Abschlussarbeit terms intentionally excluded: the student does not
+    # want Master's-thesis roles, so a thesis title must not earn a junior-role
+    # bonus. See the master_thesis hard-reject in pipeline._apply_scores.
     "graduate",
     "trainee",
     "assistant",

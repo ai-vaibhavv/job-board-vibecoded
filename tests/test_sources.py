@@ -17,7 +17,6 @@ from job_alerts.models import SearchQuery
 from job_alerts.sources import build_source, build_sources
 from job_alerts.sources.generic_html import GenericHtmlSource, SelectorError
 from job_alerts.sources.mock import MockSource
-from job_alerts.sources.research_sources import JsonApiSource, resolve_path
 from job_alerts.sources.rss import RssSource
 from job_alerts.sources.search_api import (
     SearchApiSource,
@@ -266,89 +265,6 @@ class TestGenericHtmlSource:
         html_config.url = None
         with pytest.raises(SelectorError, match="no url"):
             await GenericHtmlSource(html_config, client).search(QUERY)
-
-
-JSON_FIXTURE = {
-    "data": {
-        "results": [
-            {
-                "id": "j-1",
-                "title": "Research Assistant AI",
-                "employer": {"name": "DFKI"},
-                "location": {"city": "Saarbrücken"},
-                "description_html": "<p>An AI role.</p>",
-                "links": {"self": "https://dfki.de/jobs/1"},
-                "posted_at": "2026-03-15T10:00:00Z",
-            },
-            {
-                "id": "j-2",
-                "title": "Missing URL",
-                "employer": {"name": "X"},
-            },
-        ]
-    }
-}
-
-
-class TestJsonApiSource:
-    @pytest.fixture
-    def json_config(self) -> SourceConfig:
-        return SourceConfig(
-            name="board",
-            type="json_api",
-            url="https://board.de/api",
-            items_path="data.results",
-            field_map={
-                "source_job_id": "id",
-                "title": "title",
-                "organization": "employer.name",
-                "location": "location.city",
-                "description": "description_html",
-                "url": "links.self",
-                "published_at": "posted_at",
-            },
-        )
-
-    async def test_maps_nested_fields(self, client, json_config):
-        candidates = JsonApiSource(json_config, client).parse(JSON_FIXTURE)
-        assert len(candidates) == 1  # the URL-less item is dropped
-
-        job = candidates[0]
-        assert job.title == "Research Assistant AI"
-        assert job.organization == "DFKI"
-        assert job.location == "Saarbrücken"
-        assert job.url == "https://dfki.de/jobs/1"
-
-    async def test_unresolvable_items_path_returns_nothing(self, client, json_config):
-        json_config.items_path = "no.such.path"
-        assert JsonApiSource(json_config, client).parse(JSON_FIXTURE) == []
-
-    async def test_items_path_pointing_at_a_scalar_is_an_error(self, client, json_config):
-        json_config.items_path = "data"
-        with pytest.raises(ValueError, match="expected a list"):
-            JsonApiSource(json_config, client).parse({"data": "not a list"})
-
-    async def test_field_map_without_title_is_rejected(self, client, json_config):
-        json_config.field_map = {"url": "links.self"}
-        with pytest.raises(ValueError, match="missing 'title'"):
-            await JsonApiSource(json_config, client).search(QUERY)
-
-    @pytest.mark.parametrize(
-        ("path", "expected"),
-        [
-            ("a.b", "x"),
-            ("a.missing", None),
-            ("list[]", [{"n": 1}, {"n": 2}]),
-            ("list[].n", [1, 2]),
-            ("", {"a": {"b": "x"}, "list": [{"n": 1}, {"n": 2}]}),
-        ],
-    )
-    def test_resolve_path(self, path, expected):
-        data = {"a": {"b": "x"}, "list": [{"n": 1}, {"n": 2}]}
-        assert resolve_path(data, path) == expected
-
-    def test_resolve_path_on_missing_intermediate_returns_none(self):
-        assert resolve_path({"a": None}, "a.b.c") is None
 
 
 class TestSearchApiSource:
@@ -973,7 +889,6 @@ class TestSourceRegistry:
             ("mock", MockSource),
             ("rss", RssSource),
             ("html", GenericHtmlSource),
-            ("json_api", JsonApiSource),
             ("search_api", SearchApiSource),
         ],
     )

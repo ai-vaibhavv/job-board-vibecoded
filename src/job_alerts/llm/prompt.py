@@ -21,7 +21,7 @@ import json
 
 from ..models import Job
 
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
 """Bump whenever a change to this file would change a verdict.
 
 Verdicts are cached per job, so without this a rubric change would leave old
@@ -32,6 +32,9 @@ Bumping invalidates the cache and everything is re-judged once.
 v1 -> v2: added `german_required` and `country`.
 v2 -> v3: added `is_hiring_post`, and stopped rule 1 from waving through
           linkedin.com/posts/ URLs as "one specific posting".
+v3 -> v4: excluded Master's-thesis roles; added `core_ai_focus` (reject
+          domain-application roles that merely use ML); added `card_summary`
+          for the Discord card.
 """
 
 SYSTEM_PROMPT = """\
@@ -52,13 +55,15 @@ def _profile_block(topics: list[str], locations: list[str], all_germany: bool) -
 THE STUDENT
 - Currently enrolled Master's student at a German university. Not a PhD holder.
 - Wants: Research Assistant, Studentische/Wissenschaftliche Hilfskraft (HiWi),
-  Werkstudent (research-oriented), Research Intern/Praktikum, or a Master's
-  thesis (Masterarbeit/Abschlussarbeit) project.
+  Werkstudent (research-oriented), or a Research Intern/Praktikum — where the
+  CORE of the work is AI/ML/DL/CV/NLP.
 - Fields of interest: {topic_list}
 - Works in English or German.
 - Location: {location_line}
-- CANNOT take: roles requiring a completed doctorate, postdoc positions,
-  professorships, senior/lead/head roles, or Ausbildung (vocational training).\
+- CANNOT take / does NOT want: roles requiring a completed doctorate, postdoc
+  positions, professorships, senior/lead/head roles, Ausbildung (vocational
+  training), Master's-thesis / Abschlussarbeit / Bachelorarbeit projects, and
+  roles whose real field is another discipline that merely applies ML.\
 """
 
 
@@ -126,6 +131,24 @@ RULES — follow exactly.
 4. role_type — one of:
    research_assistant, hiwi, werkstudent, research_intern, master_thesis,
    phd_position, postdoc, senior, other
+   The student does NOT want master_thesis roles. Label them master_thesis
+   honestly (a posting offering ONLY a Masterarbeit/Abschlussarbeit/thesis
+   project) — the pipeline drops them. A HiWi/RA/Werkstudent role that merely
+   mentions a possible thesis is not itself a master_thesis role.
+
+4b. core_ai_focus — true when developing or researching AI/ML/DL/CV/NLP methods
+   is a CORE objective of the role, false when the role's real field is another
+   discipline and ML/AI is only a tool applied to that field's data.
+     TRUE:  "HiWi developing deep-learning models for image segmentation",
+            "Werkstudent in NLP / LLM research", "research assistant, computer
+            vision", "student assistant training reinforcement-learning agents"
+     FALSE: "HiWi in history using ML to analyse archival texts", "student
+            assistant in energy engineering applying machine learning to grid
+            data", "Werkstudent materials science, ML for simulation data",
+            "biology lab position, some data analysis"
+   The test is what the role is ABOUT, not whether ML appears. When the posting
+   is genuinely an AI/ML/robotics role, set true. When unsure and the field is
+   clearly a non-CS domain, set false.
 
 5. seniority — one of: student, entry, mid, senior
 
@@ -152,12 +175,18 @@ RULES — follow exactly.
    with a German name may be in Nigeria. Say null unless the text tells you.
 
 6. topics — which of the student's fields of interest the job actually matches.
-   Use the student's own wording. Map German terms yourself
-   ("Softwareentwicklung" -> software engineering, "Bildverarbeitung" ->
-   computer vision, "Punktwolken/Bilddaten annotieren" -> computer vision).
-   Be honest: list a topic ONLY if the job genuinely involves it. An empty list
-   is the correct answer for a job outside the student's fields, and it is far
-   more useful than a stretched one.
+   Use the student's own wording. Map German AI terms yourself
+   ("Bildverarbeitung" -> computer vision, "Sprachverarbeitung" -> NLP,
+   "Punktwolken/Bilddaten annotieren" -> computer vision).
+   List an AI/ML topic ONLY when developing or researching that method is a CORE
+   objective of the role (see core_ai_focus). If the role's primary purpose is a
+   non-CS domain (history, biology, medicine, economics, chemistry, physics/lab,
+   energy, materials) and ML/AI is merely applied to that domain's data, do NOT
+   list machine learning / computer vision / NLP as topics — the field is the
+   domain, not the method. Do not stretch: "data processing" inside a
+   laser-technology role is NOT data science. An empty list is the correct
+   answer for a job outside the student's fields, and far more useful than a
+   stretched one.
 
 7. language — "en", "de", or "unknown", based on the posting text.
 
@@ -186,6 +215,15 @@ RULES — follow exactly.
 
 9. reasoning — ONE short sentence (max 20 words) explaining the score. Be
    concrete: name the role and the field. No filler.
+
+10. card_summary — a short blurb shown on the student's Discord alert. EXACTLY
+   two plain sentences, max 240 characters total, no markdown, no emojis, no
+   line breaks. Sentence one: what the role is (role type + field + employer if
+   known). Sentence two: what the work involves or who it suits. Neutral, uniform
+   tone — every card should read the same way. If the posting is thin, say so
+   plainly rather than inventing detail. Example: "Student research assistant
+   (HiWi) in computer vision at TU Munich. Involves training deep-learning models
+   for medical image segmentation; open to enrolled Master's students."
 
 Judge ONLY on the text provided. If a field is missing, do not assume it is bad —
 judge on what is there. Never invent an employer, a location, or a requirement.\
@@ -241,12 +279,14 @@ Return JSON with exactly this shape, one entry per job, and nothing else:
       "requires_completed_phd": false,
       "german_required": false,
       "suitable_for_masters": true,
+      "core_ai_focus": true,
       "seniority": "student",
       "topics": ["machine learning"],
       "language": "de",
       "country": "Germany",
       "score": 85,
-      "reasoning": "Student HiWi role in machine learning at a German university."
+      "reasoning": "Student HiWi role in machine learning at a German university.",
+      "card_summary": "HiWi in machine learning at a German university; open to Master's students."
     }}
   ]
 }}

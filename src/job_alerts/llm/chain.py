@@ -1,16 +1,17 @@
-"""Provider fallback: Gemini → Groq → keyword scoring.
+"""Provider fallback: Colab → keyword scoring.
 
-The contract is that a job alert never depends on an LLM being up. Failure is
-handled at three levels, each narrower than the last:
+The contract is that a job alert never depends on an LLM being up. The
+self-hosted Colab model is ephemeral (the notebook idles out and the tunnel URL
+changes every session), so failure is handled at two levels:
 
-  1. Per batch, per provider — Gemini 429s on batch 3? Groq assesses batch 3.
-     Batches 1, 2 and 4 keep whatever Gemini already returned.
-  2. Per job — a provider returned 7 of 8 assessments? The 8th is scored by the
-     keyword scorer. No job is dropped for lacking an LLM verdict.
-  3. Whole run — no keys, both providers down, or LLM disabled? Every job is
-     scored by the keyword path and the run is otherwise identical.
+  1. Per job — the provider returned 7 of 8 assessments? The 8th is scored by
+     the keyword scorer. No job is dropped for lacking an LLM verdict.
+  2. Whole run — no `colab_base_url`, the tunnel is down, or LLM disabled? Every
+     job is scored by the keyword path and the run is otherwise identical.
 
 That is what "seamless" has to mean here: degrade quietly and keep sending jobs.
+`build_providers` returns a list, and `LlmAssessor` loops it, so restoring a
+hosted fallback later is just another branch here.
 """
 
 from __future__ import annotations
@@ -23,37 +24,31 @@ from collections import defaultdict
 from ..config import LlmSettings, Secrets
 from ..models import Job
 from .base import JobAssessment, LlmError, LlmProvider
-from .providers import GeminiProvider, GroqProvider
+from .providers import ColabProvider
 
 logger = logging.getLogger(__name__)
 
 
 def build_providers(secrets: Secrets, settings: LlmSettings) -> list[LlmProvider]:
-    """Providers in preference order, skipping any without a key.
+    """Configured providers, in `llm.providers` order.
 
-    Order comes from `llm.providers` in settings.yaml, so preferring Groq is a
-    config change, not a code change.
+    Only the self-hosted `colab` provider exists; it is built when
+    `colab_base_url` is set and skipped otherwise (the run then falls back to
+    keyword scoring).
     """
     available: list[LlmProvider] = []
     for name in settings.providers:
-        if name == "gemini" and secrets.gemini_api_key.strip():
+        if name == "colab" and settings.colab_base_url.strip():
             available.append(
-                GeminiProvider(
-                    secrets.gemini_api_key.strip(),
-                    model=settings.gemini_model,
+                ColabProvider(
+                    settings.colab_base_url.strip(),
+                    api_key=secrets.colab_api_key.strip(),
+                    model=settings.colab_model,
                     timeout=settings.timeout,
                 )
             )
-        elif name == "groq" and secrets.groq_api_key.strip():
-            available.append(
-                GroqProvider(
-                    secrets.groq_api_key.strip(),
-                    model=settings.groq_model,
-                    timeout=settings.timeout,
-                )
-            )
-        elif name in ("gemini", "groq"):
-            logger.debug("llm provider %s configured but has no API key; skipping", name)
+        elif name == "colab":
+            logger.debug("llm provider colab listed but has no colab_base_url; skipping")
         else:
             logger.warning("unknown llm provider %r in settings; ignoring", name)
     return available
