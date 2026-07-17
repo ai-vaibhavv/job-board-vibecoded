@@ -176,12 +176,14 @@ class ColabProvider:
         api_key: str = "",
         model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ",
         timeout: float = 60.0,
+        max_output_tokens: int = 0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.endpoint = f"{self.base_url}/v1/chat/completions"
         self.api_key = api_key
         self.model = model
+        self.max_output_tokens = max_output_tokens
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
 
@@ -195,7 +197,7 @@ class ColabProvider:
         Shared by Pass 1 (`assess`) and Pass 2 (`classify_details`) — the only
         difference between the two calls is which prompt goes in.
         """
-        body = {
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -203,6 +205,8 @@ class ColabProvider:
             ],
             "temperature": 0.0,
         }
+        if self.max_output_tokens > 0:
+            body["max_tokens"] = self.max_output_tokens
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

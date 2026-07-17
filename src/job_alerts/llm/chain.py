@@ -45,6 +45,7 @@ def build_providers(secrets: Secrets, settings: LlmSettings) -> list[LlmProvider
                     api_key=secrets.colab_api_key.strip(),
                     model=settings.colab_model,
                     timeout=settings.timeout,
+                    max_output_tokens=settings.max_output_tokens,
                 )
             )
         elif name == "colab":

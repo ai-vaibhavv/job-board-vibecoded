@@ -296,6 +296,13 @@ class LlmSettings(BaseModel):
     Groq's 12k tokens/minute limit — two requests per minute. 700 roughly halves
     that while keeping enough text to judge a posting."""
 
+    max_output_tokens: int = 2048
+    """Token budget for an assessment/detail reply. 0 = don't send `max_tokens`
+    (let the server decide). A self-hosted server whose default `num_predict` is
+    small will otherwise truncate — or, for a reasoning model that spends tokens
+    "thinking", return EMPTY content — so the batch silently falls back to keyword
+    scoring. Giving it explicit room is what stops that."""
+
     translate_max_input_chars: int = 8000
     """Characters of a German posting sent to the dashboard translator. Higher =
     a fuller English translation, but input + output must fit the model's context

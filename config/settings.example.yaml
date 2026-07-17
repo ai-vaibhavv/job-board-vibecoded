@@ -367,7 +367,11 @@ llm:
 
   # --- Pacing. One request at a time suits a single local model. ---
   max_concurrency: 1
-  min_request_interval: 6.0
+  # Seconds to wait BETWEEN requests. This exists for free CLOUD tiers with a
+  # per-minute limit; a SELF-HOSTED model has no such limit, and max_concurrency:1
+  # already serialises the calls, so pacing here is pure dead time. Keep it ~0 for
+  # a local/Colab model; raise it only if you point at a rate-limited hosted API.
+  min_request_interval: 0.0
 
   # Retries after EVERY provider fails transiently (429 / 503 / timeout).
   # Permanent failures (bad API key, malformed request) are never retried.
@@ -379,6 +383,12 @@ llm:
   # Description characters sent per job. The single biggest lever on token use
   # and therefore on rate limits: 1500 roughly doubles the prompt vs 700.
   max_description_chars: 700
+
+  # Token budget for a reply. 0 = let the server decide. Set this when a
+  # self-hosted model returns EMPTY or truncated JSON (its default num_predict is
+  # too small, or a reasoning model spent its budget "thinking") — the batch then
+  # silently falls back to keyword scoring. 2048 comfortably fits a batch's JSON.
+  max_output_tokens: 2048
 
   # Run the cheap keyword filter first and only send survivors to the LLM.
   # Saves most of your quota. Set false to let the LLM see every candidate
