@@ -49,9 +49,15 @@ Tick items as they land. Last updated: 2026-07-17.
 
 **Phase 2 core complete.** Remaining is incremental source-adding, done as needed.
 
-### Phase 3 — central academic profile (single-user, local-first)
-- [ ] Persistent résumé upload (PDF/DOCX/MD/LaTeX/ZIP), immutable originals
-- [ ] Structured profile extraction with provenance; profile editor; delete/export
+### Phase 3 — central academic profile (single-user, local-first) ✅
+- [x] Persistent résumé upload (PDF/Markdown/LaTeX/text; immutable original bytes stored + hashed).
+      DOCX/ZIP deferred.
+- [x] Structured `AcademicProfile` (education/experience/projects/skills/publications/links) via
+      LLM extraction (`extract_profile`, disable_thinking); tolerant of the shapes models emit.
+- [x] Provenance: immutable `extracted_json` kept beside the editable `profile_json` (migration v10).
+- [x] Profile editor + upload/export/delete/download-original — API (`/api/profile*`) + React
+      Profile page. Validated end-to-end on the real résumé.
+- [x] Bonus: the `disable_thinking` fix now also applies to the dashboard translate/keyword LLM path.
 
 ### Phase 4 — matching & semantic search
 - [ ] Profile↔opportunity match analysis (evidence-cited categories, **no ATS score**)

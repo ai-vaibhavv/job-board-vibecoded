@@ -11,6 +11,7 @@ the same code path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -254,6 +255,38 @@ _MIGRATIONS: list[str] = [
         consecutive_empty   INTEGER NOT NULL DEFAULT 0,
         consecutive_errors  INTEGER NOT NULL DEFAULT 0,
         total_runs          INTEGER NOT NULL DEFAULT 0
+    );
+    """,
+    # v10 — the central academic profile (Phase 3).
+    #
+    # `profile_uploads` keeps every uploaded résumé BYTE-FOR-BYTE and immutable —
+    # the original is never mutated, only re-extracted from. `profile` is a
+    # singleton (CHECK id = 1): one user, one canonical profile. It stores BOTH
+    # the immutable LLM output (`extracted_json`) and the editable working copy
+    # (`profile_json`), so "what the machine read" and "what the user corrected"
+    # are always both recoverable — that is the whole provenance story, kept at the
+    # row level instead of smeared across per-field flags.
+    """
+    CREATE TABLE IF NOT EXISTS profile_uploads (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename      TEXT NOT NULL,
+        content_type  TEXT,
+        content_hash  TEXT NOT NULL,
+        size_bytes    INTEGER NOT NULL DEFAULT 0,
+        raw           BLOB NOT NULL,
+        uploaded_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS profile (
+        id               INTEGER PRIMARY KEY CHECK (id = 1),
+        profile_json     TEXT NOT NULL,
+        extracted_json   TEXT NOT NULL,
+        source_upload_id INTEGER REFERENCES profile_uploads(id) ON DELETE SET NULL,
+        model_version    TEXT,
+        prompt_version   INTEGER,
+        user_edited      INTEGER NOT NULL DEFAULT 0,
+        extracted_at     TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
     );
     """,
 ]
@@ -919,6 +952,108 @@ class Database:
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # -- central academic profile (Phase 3) -------------------------------
+
+    def save_profile_upload(
+        self, filename: str, content_type: str | None, raw: bytes, when: datetime | None = None
+    ) -> int:
+        """Store an uploaded résumé byte-for-byte (immutable). Returns its id."""
+        digest = hashlib.sha256(raw).hexdigest()
+        with self._tx() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO profile_uploads
+                    (filename, content_type, content_hash, size_bytes, raw, uploaded_at)
+                VALUES (?,?,?,?,?,?)
+                """,
+                (filename, content_type, digest, len(raw), raw, _dt(when or datetime.now(UTC))),
+            )
+            return int(cur.lastrowid)
+
+    def get_profile_upload(self, upload_id: int) -> dict | None:
+        """One stored upload, including its raw bytes (for download/re-extract)."""
+        row = self._conn.execute(
+            "SELECT id, filename, content_type, content_hash, size_bytes, raw, uploaded_at "
+            "FROM profile_uploads WHERE id = ?",
+            (upload_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def latest_profile_upload(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT id, filename, content_type, content_hash, size_bytes, uploaded_at "
+            "FROM profile_uploads ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def save_profile(
+        self,
+        profile_json: str,
+        extracted_json: str,
+        *,
+        source_upload_id: int | None,
+        model_version: str | None,
+        prompt_version: int | None,
+        user_edited: bool = False,
+        when: datetime | None = None,
+    ) -> None:
+        """Insert or replace the singleton profile (id = 1)."""
+        now = _dt(when or datetime.now(UTC))
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO profile (
+                    id, profile_json, extracted_json, source_upload_id,
+                    model_version, prompt_version, user_edited, extracted_at, updated_at
+                ) VALUES (1,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    profile_json     = excluded.profile_json,
+                    extracted_json   = excluded.extracted_json,
+                    source_upload_id = excluded.source_upload_id,
+                    model_version    = excluded.model_version,
+                    prompt_version   = excluded.prompt_version,
+                    user_edited      = excluded.user_edited,
+                    extracted_at     = excluded.extracted_at,
+                    updated_at       = excluded.updated_at
+                """,
+                (
+                    profile_json,
+                    extracted_json,
+                    source_upload_id,
+                    model_version,
+                    prompt_version,
+                    1 if user_edited else 0,
+                    now,
+                    now,
+                ),
+            )
+
+    def update_profile_json(self, profile_json: str, when: datetime | None = None) -> bool:
+        """Save a user-edited profile over the working copy (extracted_json is
+        left untouched, preserving provenance). Returns False if none exists."""
+        if self.get_profile() is None:
+            return False
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE profile SET profile_json = ?, user_edited = 1, updated_at = ? WHERE id = 1",
+                (profile_json, _dt(when or datetime.now(UTC))),
+            )
+        return True
+
+    def get_profile(self) -> dict | None:
+        row = self._conn.execute(
+            "SELECT profile_json, extracted_json, source_upload_id, model_version, "
+            "prompt_version, user_edited, extracted_at, updated_at FROM profile WHERE id = 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_profile(self) -> None:
+        """Erase the profile and every stored upload — the user's 'delete my
+        data' button. Uploads go too: the résumé bytes are the sensitive part."""
+        with self._tx() as conn:
+            conn.execute("DELETE FROM profile WHERE id = 1")
+            conn.execute("DELETE FROM profile_uploads")
 
     def purge_old_rejected(self, retention_days: int) -> int:
         """Drop stale rejected jobs. Returns rows removed."""

@@ -156,3 +156,66 @@ export interface JobFilters {
   text: string;
   show_hidden: boolean;
 }
+
+// --- central academic profile (Phase 3) ---
+
+export interface Education {
+  degree: string;
+  level: string;
+  institution: string;
+  field: string;
+  start: string;
+  end: string;
+  grade: string;
+}
+export interface Experience {
+  title: string;
+  organization: string;
+  kind: string;
+  description: string;
+  start: string;
+  end: string;
+}
+export interface Project {
+  name: string;
+  description: string;
+  technologies: string[];
+}
+export interface Skills {
+  programming: string[];
+  technical: string[];
+  research_methods: string[];
+  languages: string[];
+}
+export interface Links {
+  github: string;
+  scholar: string;
+  orcid: string;
+  portfolio: string;
+  linkedin: string;
+  email: string;
+}
+export interface AcademicProfile {
+  name: string;
+  headline: string;
+  summary: string;
+  research_interests: string[];
+  education: Education[];
+  experience: Experience[];
+  projects: Project[];
+  publications: string[];
+  awards: string[];
+  skills: Skills;
+  links: Links;
+}
+export interface ProfileResponse {
+  exists: boolean;
+  profile: AcademicProfile;
+  extracted?: AcademicProfile;
+  user_edited?: boolean;
+  model_version?: string | null;
+  extracted_at?: string;
+  updated_at?: string;
+  source?: { filename: string; size_bytes: number; uploaded_at: string } | null;
+  message?: string;
+}

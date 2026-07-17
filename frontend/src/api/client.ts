@@ -3,11 +3,13 @@
 // no base URL to configure here.
 
 import type {
+  AcademicProfile,
   Health,
   JobDetail,
   JobFilters,
   JobsResponse,
   Meta,
+  ProfileResponse,
   ResumeResult,
   SearchPreview,
   SearchTask,
@@ -112,4 +114,28 @@ export const api = {
     }
     return (await res.json()) as ResumeResult;
   },
+
+  // --- central academic profile (Phase 3) ---
+  profile: () => request<ProfileResponse>("/profile"),
+
+  uploadProfile: async (file: File): Promise<ProfileResponse> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/profile", { method: "POST", body: form });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        detail = (await res.json())?.detail ?? detail;
+      } catch {
+        /* keep statusText */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as ProfileResponse;
+  },
+
+  updateProfile: (profile: AcademicProfile) =>
+    request<ProfileResponse>("/profile", { method: "PUT", body: JSON.stringify(profile) }),
+
+  deleteProfile: () => request<ProfileResponse>("/profile", { method: "DELETE" }),
 };

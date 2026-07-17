@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +42,7 @@ from ..notifications.discord import (
     _color_for,
     org_image_url,
 )
+from ..profile import AcademicProfile
 from ..scheduler import RunLockedError, run_once
 from .queries import build_site_queries, domains_for
 
@@ -854,6 +857,149 @@ def prefill_from_resume(resume_path: str | None) -> tuple[str, list[str], str]:
     if not keywords and not topics:
         return "", [], "LLM endpoint unavailable — type your keywords manually."
     return ", ".join(keywords), topics, f"Extracted {len(keywords)} keyword(s)."
+
+
+# ---------------------------------------------------------------------------
+# Central academic profile (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def _resume_text(raw: bytes, filename: str) -> str:
+    """Best-effort plain text from an uploaded résumé.
+
+    PDF via pypdf; .txt/.md/.tex/.markdown decoded directly. DOCX/ZIP are not yet
+    supported — the caller shows a clear message rather than storing junk.
+    """
+    name = (filename or "").lower()
+    if name.endswith(".pdf") or raw[:5] == b"%PDF-":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    if name.endswith((".txt", ".md", ".markdown", ".tex", ".rst")):
+        return raw.decode("utf-8", errors="replace")
+    if name.endswith((".docx", ".zip")):
+        raise ValueError("DOCX/ZIP résumés are not supported yet — upload a PDF or text/Markdown.")
+    # Unknown extension: try to decode as text; a binary file yields junk that the
+    # extractor will simply fail to read, which the caller reports honestly.
+    return raw.decode("utf-8", errors="replace")
+
+
+def save_and_extract_profile(raw: bytes, filename: str, content_type: str | None) -> dict:
+    """Persist the original résumé immutably, extract a structured profile from it,
+    and store that as the canonical profile. Returns the profile payload (same
+    shape as `get_profile_json`) plus a `message`."""
+    cfg = get_config()
+    try:
+        text = _resume_text(raw, filename)
+    except Exception as exc:
+        return {"exists": False, "message": str(exc)}
+    if not text.strip():
+        return {"exists": False, "message": "No selectable text found (is it a scanned image?)."}
+
+    from ..llm.assist import PROFILE_PROMPT_VERSION, extract_profile
+
+    extracted = asyncio.run(extract_profile(text, cfg.settings.llm, cfg.secrets))
+    if extracted is None:
+        return {
+            "exists": False,
+            "message": "LLM endpoint unavailable — could not read the résumé. Try again later.",
+        }
+    try:
+        profile = AcademicProfile.model_validate(extracted)
+    except Exception as exc:
+        logger.info("profile validation failed: %s", exc)
+        return {"exists": False, "message": "The extracted profile could not be parsed."}
+    if profile.is_empty():
+        return {"exists": False, "message": "Could not extract a meaningful profile from the file."}
+
+    profile_json = profile.model_dump_json()
+    with Database(cfg.db_path) as db:
+        upload_id = db.save_profile_upload(filename, content_type, raw)
+        db.save_profile(
+            profile_json,
+            profile_json,
+            source_upload_id=upload_id,
+            model_version=cfg.settings.llm.colab_model,
+            prompt_version=PROFILE_PROMPT_VERSION,
+            user_edited=False,
+        )
+    result = get_profile_json()
+    result["message"] = "Profile extracted. Review and edit anything the résumé didn't spell out."
+    return result
+
+
+def get_profile_json() -> dict:
+    """The current profile for the UI: the editable copy, the immutable extracted
+    copy (for a 'what changed' view), and the source-upload metadata."""
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        row = db.get_profile()
+        upload = db.latest_profile_upload()
+    if row is None:
+        return {"exists": False, "profile": AcademicProfile().model_dump(mode="json")}
+    try:
+        profile = json.loads(row["profile_json"])
+        extracted = json.loads(row["extracted_json"])
+    except json.JSONDecodeError:
+        return {"exists": False, "profile": AcademicProfile().model_dump(mode="json")}
+    return {
+        "exists": True,
+        "profile": profile,
+        "extracted": extracted,
+        "user_edited": bool(row["user_edited"]),
+        "model_version": row["model_version"],
+        "extracted_at": row["extracted_at"],
+        "updated_at": row["updated_at"],
+        "source": (
+            {
+                "filename": upload["filename"],
+                "size_bytes": upload["size_bytes"],
+                "uploaded_at": upload["uploaded_at"],
+            }
+            if upload
+            else None
+        ),
+    }
+
+
+def update_profile(payload: dict) -> dict:
+    """Save a user-edited profile over the working copy (the immutable extracted
+    copy is preserved). Validates against the model; returns the fresh payload."""
+    cfg = get_config()
+    try:
+        profile = AcademicProfile.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(f"invalid profile: {exc}") from exc
+    with Database(cfg.db_path) as db:
+        if not db.update_profile_json(profile.model_dump_json()):
+            raise ValueError("no profile to update — upload a résumé first")
+    result = get_profile_json()
+    result["message"] = "Profile saved."
+    return result
+
+
+def delete_profile_data() -> dict:
+    """Erase the profile and every stored résumé — the 'delete my data' action."""
+    with Database(get_config().db_path) as db:
+        db.delete_profile()
+    return {"exists": False, "message": "Profile and uploaded résumés deleted."}
+
+
+def export_profile() -> dict:
+    """The full profile as a JSON-serialisable dict, for download."""
+    data = get_profile_json()
+    data.pop("message", None)
+    return data
+
+
+def get_original_upload() -> dict | None:
+    """The immutable original résumé bytes + metadata, for download. None if none."""
+    with Database(get_config().db_path) as db:
+        latest = db.latest_profile_upload()
+        if latest is None:
+            return None
+        return db.get_profile_upload(latest["id"])
 
 
 # ---------------------------------------------------------------------------

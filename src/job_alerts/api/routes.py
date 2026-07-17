@@ -12,7 +12,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 
 from ..dashboard import service as svc
 from .jobs import TaskRegistry
@@ -158,6 +158,58 @@ def resume(file: UploadFile = File(...)) -> dict:
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     return {"keywords": keywords, "topics": topics, "message": message}
+
+
+# --- central academic profile (Phase 3) ----------------------------------
+
+_MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10 MB is plenty for a résumé; reject bombs.
+
+
+@router.get("/profile")
+def get_profile() -> dict:
+    return svc.get_profile_json()
+
+
+@router.post("/profile", dependencies=[Depends(require_write_auth)])
+def upload_profile(file: UploadFile = File(...)) -> dict:
+    """Upload a résumé: store the original immutably and extract a profile."""
+    raw = file.file.read(_MAX_RESUME_BYTES + 1)
+    if len(raw) > _MAX_RESUME_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "résumé exceeds 10 MB")
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty file")
+    return svc.save_and_extract_profile(raw, file.filename or "resume", file.content_type)
+
+
+@router.put("/profile", dependencies=[Depends(require_write_auth)])
+def edit_profile(payload: dict) -> dict:
+    try:
+        return svc.update_profile(payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@router.delete("/profile", dependencies=[Depends(require_write_auth)])
+def delete_profile() -> dict:
+    return svc.delete_profile_data()
+
+
+@router.get("/profile/export")
+def export_profile() -> dict:
+    return svc.export_profile()
+
+
+@router.get("/profile/original")
+def download_original() -> Response:
+    """Download the immutable original résumé."""
+    upload = svc.get_original_upload()
+    if upload is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no résumé stored")
+    return Response(
+        content=upload["raw"],
+        media_type=upload["content_type"] or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{upload["filename"]}"'},
+    )
 
 
 # --- settings (secrets overlay) ------------------------------------------

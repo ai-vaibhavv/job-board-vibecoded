@@ -75,20 +75,39 @@ async def _chat(
         logger.debug("no colab_base_url configured; assist call skipped")
         return None
 
-    endpoint = f"{base.rstrip('/')}/v1/chat/completions"
-    body = {
-        "model": llm.colab_model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.0,
-        "max_tokens": max_tokens,
-    }
+    root = base.rstrip("/")
     headers = {"Content-Type": "application/json"}
     key = secrets.colab_api_key.strip()
     if key:
         headers["Authorization"] = f"Bearer {key}"
+
+    # A reasoning model (Qwen3 via Ollama) returns EMPTY content on the /v1 layer —
+    # it spends its budget in a hidden `reasoning` field. Ollama's native /api/chat
+    # with think:false fixes it, so honour `disable_thinking` here exactly as
+    # ColabProvider does; otherwise translation and résumé extraction quietly fail.
+    if llm.disable_thinking:
+        endpoint = f"{root}/api/chat"
+        body: dict = {
+            "model": llm.colab_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.0, "num_predict": max_tokens},
+        }
+    else:
+        endpoint = f"{root}/v1/chat/completions"
+        body = {
+            "model": llm.colab_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+        }
 
     try:
         async with httpx.AsyncClient(timeout=llm.timeout) as client:
@@ -107,6 +126,8 @@ async def _chat(
         logger.info("assist endpoint returned non-JSON")
         return None
 
+    if llm.disable_thinking:
+        return (payload.get("message") or {}).get("content") or ""
     choices = payload.get("choices") or []
     if not choices:
         return None
@@ -220,3 +241,59 @@ async def extract_search_terms(
         "keywords": _clean(parsed.get("keywords"))[:_MAX_KEYWORDS],
         "topics": _clean(parsed.get("topics")),
     }
+
+
+PROFILE_PROMPT_VERSION = 1
+"""Bump when a change here would change the extracted profile shape, so a stored
+profile records which rubric produced it (Phase 3, mirrors PROMPT_VERSION)."""
+
+_MAX_PROFILE_INPUT_CHARS = 12000
+
+_PROFILE_SYSTEM = (
+    "You extract a structured academic profile from a résumé. You NEVER invent "
+    "anything: a fact that is not in the résumé stays absent. You do not guess a "
+    "GPA, a publication, a skill or a date the person did not state. You reply with "
+    "valid JSON only — no prose, no markdown fences."
+)
+
+
+async def extract_profile(resume_text: str, llm: LlmSettings, secrets: Secrets) -> dict | None:
+    """Read a résumé into a structured `AcademicProfile`-shaped dict.
+
+    Best-effort: returns None when the endpoint is down or the reply is unusable,
+    so the caller can fall back to an empty, hand-editable profile. The prompt is
+    strict about never fabricating — an unknown field comes back empty, and the
+    user fills it in themselves.
+    """
+    if not resume_text or not resume_text.strip():
+        return None
+
+    user = (
+        "Extract a structured academic profile from this résumé. Use ONLY facts "
+        "present in the text; leave anything not stated empty. Return JSON with "
+        "exactly this shape and nothing else:\n"
+        "{\n"
+        '  "name": "", "headline": "", "summary": "",\n'
+        '  "research_interests": [],\n'
+        '  "education": [{"degree":"","level":"bachelor|master|phd|other",'
+        '"institution":"","field":"","start":"","end":"","grade":""}],\n'
+        '  "experience": [{"title":"","organization":"",'
+        '"kind":"work|research|teaching|other","description":"","start":"","end":""}],\n'
+        '  "projects": [{"name":"","description":"","technologies":[]}],\n'
+        '  "publications": [], "awards": [],\n'
+        '  "skills": {"programming":[],"technical":[],"research_methods":[],"languages":[]},\n'
+        '  "links": {"github":"","scholar":"","orcid":"","portfolio":"","linkedin":"","email":""}\n'
+        "}\n"
+        "summary: 2-3 sentences in the third person, only from the résumé.\n\n"
+        f"RÉSUMÉ:\n{resume_text[:_MAX_PROFILE_INPUT_CHARS]}"
+    )
+
+    reply = await _chat(llm, secrets, _PROFILE_SYSTEM, user, max_tokens=3000)
+    if reply is None:
+        return None
+    try:
+        parsed = _extract_json(reply)
+    except Exception as exc:
+        logger.info("could not parse profile reply: %s", exc)
+        return None
+    return parsed if isinstance(parsed, dict) else None

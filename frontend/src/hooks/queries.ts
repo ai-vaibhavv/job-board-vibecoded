@@ -5,7 +5,7 @@ import {
   keepPreviousData,
 } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { JobFilters } from "../types";
+import type { AcademicProfile, JobFilters } from "../types";
 
 export const keys = {
   meta: ["meta"] as const,
@@ -14,6 +14,7 @@ export const keys = {
   job: (id: string) => ["job", id] as const,
   searchTask: (id: string) => ["search-task", id] as const,
   settings: ["settings"] as const,
+  profile: ["profile"] as const,
 };
 
 export function useMeta() {
@@ -111,5 +112,37 @@ export function useSaveSettings() {
       qc.invalidateQueries({ queryKey: keys.health });
       qc.invalidateQueries({ queryKey: keys.meta });
     },
+  });
+}
+
+// --- central academic profile (Phase 3) ---
+
+export function useProfile() {
+  return useQuery({ queryKey: keys.profile, queryFn: api.profile });
+}
+
+export function useUploadProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => api.uploadProfile(file),
+    onSuccess: (data) => {
+      if (data.exists) qc.setQueryData(keys.profile, data);
+    },
+  });
+}
+
+export function useUpdateProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (profile: AcademicProfile) => api.updateProfile(profile),
+    onSuccess: (data) => qc.setQueryData(keys.profile, data),
+  });
+}
+
+export function useDeleteProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteProfile(),
+    onSuccess: (data) => qc.setQueryData(keys.profile, data),
   });
 }
