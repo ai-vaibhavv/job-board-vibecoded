@@ -8,12 +8,29 @@ from job_alerts.filtering import (
     filter_job,
     find_matches,
     is_recent_enough,
+    looks_academic,
     matches,
     matches_location,
     requires_completed_phd,
 )
 
 from .conftest import make_job
+
+
+class TestLooksAcademic:
+    def test_english_academic_terms(self):
+        assert looks_academic("Research Assistant at the Institute of Physics")
+        assert looks_academic("PhD position in a university laboratory")
+
+    def test_german_academic_terms(self):
+        assert looks_academic("Studentische Hilfskraft am Lehrstuhl für Informatik")
+        assert looks_academic(None, "Doktorand gesucht, Universität Tübingen")
+
+    def test_non_academic_text_is_false(self):
+        assert not looks_academic("Senior Sales Manager at a fintech startup")
+
+    def test_empty_is_false(self):
+        assert not looks_academic(None, "", None)
 
 
 class TestKeywordMatching:

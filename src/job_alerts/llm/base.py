@@ -68,9 +68,20 @@ class JobAssessment(BaseModel):
     Defaults True so an ordinary job page, which is self-evidently an offer, is
     unaffected."""
 
+    is_academic_opportunity: bool = True
+    """True when the role is hosted by / affiliated with a university, department,
+    lab, research institute, university hospital or public research organization —
+    LabScout's defining in-scope rule.
+
+    False for a generic corporate/startup/agency job with no academic or research
+    affiliation, even one that matches the keywords (a "Machine Learning Engineer"
+    at a product company). Defaults True so a missing value never silently drops a
+    legitimate academic role — the pipeline rejects only an explicit False."""
+
     role_type: str = "other"
     """research_assistant | hiwi | werkstudent | research_intern | master_thesis
-    | phd_position | postdoc | senior | other"""
+    | phd_position | postdoc | senior | other. Kept as the coarse Pass-1 label; the
+    finer `OpportunityType` taxonomy is produced by the Pass-2 detail call."""
 
     requires_completed_phd: bool = False
     """True ONLY for a finished doctorate. "PhD students welcome" is not."""
@@ -151,7 +162,38 @@ class JobAssessment(BaseModel):
             lines.append("not suitable for a Master's student")
         if not self.is_job_posting:
             lines.append("not an individual job posting (listing/index page)")
+        if not self.is_academic_opportunity:
+            lines.append("not an academic/research opportunity")
         return lines
+
+
+class OpportunityDetail(BaseModel):
+    """Pass-2 fine classification for one opportunity that already passed Pass 1.
+
+    Kept separate from `JobAssessment` on purpose: the relevance/score decision
+    (Pass 1) must stay a small, reliable call, and these richer taxonomy fields are
+    best-effort enrichment for a job we have already decided to keep. A failed or
+    missing detail call never drops a job — the fields simply stay at their
+    defaults. Values are free-form here and coerced onto the `taxonomy` enums by
+    the caller (a slightly-wrong label beats a lost verdict).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    job_id: str
+    opportunity_type: str = "other"
+    applicant_level: str = "unspecified"
+    academic_field: str = "other"
+    technical_skills: list[str] = Field(default_factory=list)
+    research_topics: list[str] = Field(default_factory=list)
+
+    @field_validator("technical_skills", "research_topics", mode="before")
+    @classmethod
+    def _coerce_list(cls, value: object) -> object:
+        # Models sometimes return a comma-joined string instead of an array.
+        if isinstance(value, str):
+            return [t.strip() for t in value.split(",") if t.strip()]
+        return value
 
 
 @runtime_checkable
@@ -167,10 +209,20 @@ class LlmProvider(Protocol):
     name: str
 
     async def assess(self, jobs: list[Job], **prompt_kwargs: object) -> list[JobAssessment]:
-        """Assess a batch. Raises `LlmError` if it cannot.
+        """Assess a batch (Pass 1). Raises `LlmError` if it cannot.
 
         `prompt_kwargs` are forwarded to the prompt builder (topics, locations,
         …); `chain.py` passes them from settings.
+        """
+        ...
+
+    async def classify_details(
+        self, jobs: list[Job], **prompt_kwargs: object
+    ) -> list[OpportunityDetail]:
+        """Fine-classify a batch (Pass 2). Raises `LlmError` if it cannot.
+
+        Only ever called for jobs that already passed Pass 1, so it is pure
+        best-effort enrichment — a failure degrades to default taxonomy values.
         """
         ...
 

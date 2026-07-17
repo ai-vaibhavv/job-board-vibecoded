@@ -1,12 +1,12 @@
-"""Gemini and Groq providers.
+"""The self-hosted (Colab) LLM provider.
 
-Both are called over plain HTTP rather than through a vendor SDK: the request
-shape is a dozen lines each, and two SDKs would add two dependency trees, two
-auth models and two release cadences to a project whose whole point is that it
-keeps working unattended.
+Called over plain HTTP rather than through a vendor SDK: the request shape is a
+dozen lines, and an SDK would add a dependency tree, an auth model and a release
+cadence to a project whose whole point is that it keeps working unattended.
 
-Each provider owns its httpx client with its own (longer) timeout — an LLM call
-routinely takes 10-30s, where a job page takes under one.
+The provider owns its httpx client with its own (longer) timeout — an LLM call
+routinely takes 10-30s, where a job page takes under one. It exposes two calls:
+`assess` (Pass 1: relevance + score) and `classify_details` (Pass 2: taxonomy).
 """
 
 from __future__ import annotations
@@ -19,8 +19,13 @@ from typing import Any
 import httpx
 
 from ..models import Job
-from .base import JobAssessment, LlmError
-from .prompt import SYSTEM_PROMPT, build_user_prompt
+from .base import JobAssessment, LlmError, OpportunityDetail
+from .prompt import (
+    DETAIL_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_detail_prompt,
+    build_user_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +120,36 @@ def parse_assessments(
     return list(by_id.values())
 
 
+def parse_details(
+    payload: dict[str, Any], jobs: list[Job], provider: str
+) -> list[OpportunityDetail]:
+    """Validate a Pass-2 reply and align it to the jobs by `job_id`.
+
+    Same match-by-id discipline as `parse_assessments`. Unlike Pass 1 this is pure
+    best-effort, so an empty result is returned quietly rather than raised — the
+    caller keeps the jobs at their default taxonomy values.
+    """
+    raw = payload.get("details")
+    if raw is None and isinstance(payload.get("assessments"), list):
+        raw = payload["assessments"]  # occasional key drift
+    if not isinstance(raw, list):
+        return []
+
+    wanted = {job.id for job in jobs}
+    by_id: dict[str, OpportunityDetail] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            detail = OpportunityDetail.model_validate(item)
+        except Exception as exc:
+            logger.debug("%s: skipping unparseable detail: %s", provider, exc)
+            continue
+        if detail.job_id in wanted:
+            by_id[detail.job_id] = detail
+    return list(by_id.values())
+
+
 class ColabProvider:
     """A self-hosted, OpenAI-compatible model — e.g. Qwen2.5-7B served by Ollama
     on Google Colab and reached through an ngrok tunnel. See docs/colab-model.md.
@@ -154,13 +189,17 @@ class ColabProvider:
         if self._owns_client:
             await self._client.aclose()
 
-    async def assess(self, jobs: list[Job], **prompt_kwargs: Any) -> list[JobAssessment]:
-        prompt = build_user_prompt(jobs, **prompt_kwargs)
+    async def _chat(self, system: str, user: str) -> str:
+        """One chat-completions round-trip; returns the reply text.
+
+        Shared by Pass 1 (`assess`) and Pass 2 (`classify_details`) — the only
+        difference between the two calls is which prompt goes in.
+        """
         body = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
             "temperature": 0.0,
         }
@@ -183,8 +222,21 @@ class ColabProvider:
         choices = payload.get("choices") or []
         if not choices:
             raise LlmError("colab returned no choices")
-        text = (choices[0].get("message") or {}).get("content") or ""
+        return (choices[0].get("message") or {}).get("content") or ""
+
+    async def assess(self, jobs: list[Job], **prompt_kwargs: Any) -> list[JobAssessment]:
+        prompt = build_user_prompt(jobs, **prompt_kwargs)
+        text = await self._chat(SYSTEM_PROMPT, prompt)
         return parse_assessments(_extract_json(text), jobs, self.name)
+
+    async def classify_details(
+        self, jobs: list[Job], **prompt_kwargs: Any
+    ) -> list[OpportunityDetail]:
+        # Pass 2 only takes max_description_chars; drop any Pass-1-only kwargs.
+        max_chars = prompt_kwargs.get("max_description_chars", 1500)
+        prompt = build_detail_prompt(jobs, max_description_chars=max_chars)
+        text = await self._chat(DETAIL_SYSTEM_PROMPT, prompt)
+        return parse_details(_extract_json(text), jobs, self.name)
 
 
 def _error_excerpt(response: httpx.Response) -> str:

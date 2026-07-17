@@ -78,6 +78,12 @@ locations:
 
 keywords:
   # A job must match at least one positive keyword to survive filtering.
+  #
+  # LabScout ships BROAD: these are mostly field-agnostic academic ROLE terms
+  # (a "studentische hilfskraft" in physics matches on its role, not its field),
+  # so any-field opportunities survive the keyword prefilter and reach the LLM,
+  # which makes the final academic-relevance call. For the narrow "core_ai"
+  # preset, trim this to the AI/ML-specific *intern lines.
   positive:
     - research assistant
     - research intern
@@ -87,6 +93,11 @@ keywords:
     - research working student
     - student assistant
     - graduate research assistant
+    - undergraduate research assistant
+    - teaching assistant
+    - tutor
+    - lab assistant
+    - laboratory assistant
     - wissenschaftliche hilfskraft
     - studentische hilfskraft
     - hiwi
@@ -94,8 +105,22 @@ keywords:
     - forschungspraktikum
     - master thesis
     - masterarbeit
+    - bachelor thesis
+    - bachelorarbeit
     - abschlussarbeit
     - thesis student
+    - phd position
+    - phd student
+    - phd candidate
+    - doctoral researcher
+    - doctoral candidate
+    - promotionsstelle
+    - doktorand
+    - research fellowship
+    - research fellow
+    - summer research
+    - visiting student
+    - research software engineer
     - machine learning intern
     - artificial intelligence intern
     - data science intern
@@ -187,6 +212,17 @@ filtering:
   # and, more importantly, keeps short tokens like "hiwi" from matching inside
   # unrelated words.
   word_boundary_matching: true
+
+  # --- LabScout scope ---
+  # Broad by default: any academic field and any student/early-career level
+  # survives. Volume is held down by the score threshold below, not by narrowing
+  # fields. To run the tight "core_ai" preset (AI/ML only, Master's-level, no
+  # thesis), flip the three flags to true AND narrow keywords.topics to your
+  # fields — see the maintainer's config/settings.yaml for that exact preset.
+  require_academic: true          # LabScout is never a generic job board; keep true
+  reject_non_core_ai: false       # true = only core AI/ML roles
+  reject_master_thesis: false     # true = drop thesis-only postings
+  require_masters_suitable: false # true = require Master's-level suitability
 
 scoring:
   # Only jobs scoring at or above this are sent to Discord. 0–100.

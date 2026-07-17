@@ -242,6 +242,37 @@ sources:
       country: Germany
 
   # -------------------------------------------------------------------------
+  # Generic JSON-API connector (type: json_api). Many academic boards expose
+  # JSON; this maps an arbitrary endpoint onto the Job model via `field_map`
+  # (JobCandidate field -> dotted path), with `items_path` pointing at the list.
+  # `[]` walks a list, so "categories[].name" collects every name.
+  #
+  # status: REFERENCE — the connector is covered by a captured-fixture test
+  #         (tests/fixtures/euraxess_sample.json). EURAXESS does not currently
+  #         expose a clean public JSON endpoint (its site is server-rendered
+  #         HTML), so CONFIRM a real DE-filtered URL before enabling this, or
+  #         point it at another academic board's JSON API. Constrain to Germany
+  #         at the query (e.g. ?country=Germany) so the country gate does not
+  #         reject most of what you pull.
+  - name: euraxess_de
+    type: json_api
+    enabled: false
+    url: "https://euraxess.example/api/jobs?country=Germany&limit=50"
+    items_path: "data.results"
+    field_map:
+      source_job_id: "id"
+      title: "title"
+      organization: "organisation.name"
+      location: "location.city"
+      country: "location.country"
+      url: "links.self"
+      published_at: "posted_at"
+      application_deadline: "deadline"
+      employment_type: "employment_type"
+      description: "summary"
+      contact_email: "contact.email"
+
+  # -------------------------------------------------------------------------
   # Search-engine discovery. This is the compliant route to LinkedIn: it finds
   # public job URLs via a search API and stores the links. It NEVER logs in to
   # LinkedIn and never scrapes authenticated pages.

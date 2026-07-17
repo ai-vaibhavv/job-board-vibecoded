@@ -149,6 +149,26 @@ class FilteringSettings(BaseModel):
     phd_requirement_signals: list[str] = Field(default_factory=list)
     word_boundary_matching: bool = True
 
+    # --- LabScout scope flags -------------------------------------------
+    # These decide how broad the board is. The shipped default (settings.example)
+    # is broad: any academic field/level survives. The "core_ai" preset — the
+    # narrow AI/ML/Master's view — flips the four below on and narrows
+    # keywords.topics; that is what the maintainer's own live settings.yaml does.
+    require_academic: bool = True
+    """Reject an opportunity the LLM says is NOT academic (no university / lab /
+    institute / research affiliation). On even in broad mode — LabScout is never a
+    generic job board — but degrades open when there is no LLM verdict."""
+    reject_non_core_ai: bool = False
+    """core_ai preset: reject roles whose real field is not AI/ML (`core_ai_focus`
+    is false), cap off-topic scores, and switch the LLM persona to the narrow
+    "core-AI Master's student". Default False = all fields welcome."""
+    reject_master_thesis: bool = False
+    """core_ai preset: reject thesis-only postings (`role_type == master_thesis`).
+    Default False = thesis opportunities are in scope."""
+    require_masters_suitable: bool = False
+    """core_ai preset: reject roles the LLM marks not suitable for a Master's
+    student. Default False = all applicant levels are in scope."""
+
 
 class ScoringWeights(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -323,7 +343,7 @@ class Settings(BaseModel):
 # Sources (config/sources.yaml)
 # ---------------------------------------------------------------------------
 
-SourceType = Literal["mock", "rss", "html", "search_api", "linkedin_posts"]
+SourceType = Literal["mock", "rss", "html", "search_api", "linkedin_posts", "json_api"]
 
 
 class SourceConfig(BaseModel):
@@ -344,6 +364,14 @@ class SourceConfig(BaseModel):
     defaults: dict[str, str] = Field(default_factory=dict)
     queries: list[str] = Field(default_factory=list)
     max_results_per_query: int = 20
+
+    # --- json_api sources ---
+    items_path: str | None = None
+    """Dotted path to the list of postings in a JSON response ("data.results");
+    empty/None means the top level is already the list."""
+    field_map: dict[str, str] = Field(default_factory=dict)
+    """Maps `JobCandidate` field -> dotted path in each JSON item. At minimum map
+    `title` and `url`. See `sources/research_sources.py`."""
 
     allowed_domains: list[str] = Field(default_factory=list)
     """Hosts a search result must be on to be kept. Empty means no restriction.

@@ -1,10 +1,15 @@
-# Germany Research Job Alerts
+# LabScout
 
-Finds **Research Assistant, HiWi, Werkstudent, Research Intern and Master-thesis
-positions across Germany** — in German and English — scores each one, and either
-sends the good ones to Discord or lets you browse and publish them from a web
-dashboard. Built for a Master's student hunting AI/ML/CV/NLP/robotics research
-roles; runs entirely on your own machine.
+**Discover. Match. Research.** LabScout finds **university, lab and
+research-institute opportunities** — HiWi, student / research / teaching assistant,
+research internships, Bachelor/Master thesis, and PhD positions — **Germany-first,
+in German and English** — scores each one, and either sends the good ones to Discord
+or lets you browse and publish them from a web dashboard. A single instance can run
+broad across all academic fields, or load the `core_ai` profile preset to stay narrow
+(e.g. an AI/ML/CV/NLP/robotics-only view). Runs entirely on your own machine.
+
+> The Python package keeps its historical name `job_alerts` for stability; the
+> product is **LabScout**.
 
 ```
 🎓 3 new research positions in Germany
