@@ -324,3 +324,32 @@ class TestSettings:
         monkeypatch.setenv("JOB_ALERTS_API_AUTH", "admin:secret")
         assert client.get("/api/settings").status_code == 401
         assert client.get("/api/settings", auth=("admin", "secret")).status_code == 200
+
+
+class TestSpaFallback:
+    """A deep link like /profile is a client-side route, not a file — the static
+    layer must serve index.html so React Router can take over on a hard load."""
+
+    @pytest.fixture
+    def spa_client(self, tmp_path):
+        (tmp_path / "index.html").write_text("<!doctype html><title>LabScout</title>")
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "assets" / "app.js").write_text("// built bundle")
+        with TestClient(create_app(static_dir=str(tmp_path))) as c:
+            yield c
+
+    def test_deep_link_serves_index(self, spa_client):
+        for route in ("/profile", "/settings", "/jobs/abc123"):
+            r = spa_client.get(route)
+            assert r.status_code == 200
+            assert "LabScout" in r.text
+
+    def test_real_asset_is_served(self, spa_client):
+        assert spa_client.get("/assets/app.js").status_code == 200
+
+    def test_missing_asset_still_404s(self, spa_client):
+        # A path with a file extension is an asset request, not a client route.
+        assert spa_client.get("/assets/nope.js").status_code == 404
+
+    def test_api_still_wins_over_spa(self, spa_client):
+        assert spa_client.get("/api/health").status_code == 200

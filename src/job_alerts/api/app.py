@@ -15,8 +15,29 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .routes import router
+
+
+class SpaStaticFiles(StaticFiles):
+    """StaticFiles with a single-page-app fallback.
+
+    A client-side route like `/profile` or `/jobs/xyz` is neither a file nor a
+    directory on disk, so plain `StaticFiles` 404s on a hard load or reload —
+    `html=True` only serves index.html for directories. Serving index.html for any
+    unmatched, non-asset path lets React Router take over, which is what makes deep
+    links and refreshes work. Real missing assets (a path with a file extension)
+    still 404 honestly.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+                return await super().get_response("index.html", scope)
+            raise
 
 # In dev the Vite server (default :5173) calls the API cross-origin. Overridable
 # so a deployment can widen or lock this down.
@@ -50,13 +71,14 @@ def create_app(*, static_dir: str | os.PathLike[str] | None = None) -> FastAPI:
 
     app.include_router(router)
 
-    # Optionally serve the built SPA. `html=True` makes unknown paths fall back
-    # to index.html so client-side routing works; the /api router is matched
-    # first because it is included above this mount.
+    # Optionally serve the built SPA. `SpaStaticFiles` falls back to index.html
+    # for unmatched client-side routes (/profile, /jobs/xyz) so deep links and
+    # reloads work; the /api router is matched first because it is included above
+    # this mount.
     static = static_dir or os.environ.get("JOB_ALERTS_STATIC_DIR")
     if static:
         path = Path(static)
         if path.is_dir():
-            app.mount("/", StaticFiles(directory=str(path), html=True), name="spa")
+            app.mount("/", SpaStaticFiles(directory=str(path), html=True), name="spa")
 
     return app
