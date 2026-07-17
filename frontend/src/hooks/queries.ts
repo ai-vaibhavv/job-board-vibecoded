@@ -16,6 +16,7 @@ export const keys = {
   settings: ["settings"] as const,
   profile: ["profile"] as const,
   match: (id: string) => ["match", id] as const,
+  tailoring: (id: string) => ["tailoring", id] as const,
 };
 
 export function useMeta() {
@@ -154,6 +155,17 @@ export function useMatch(id: string | null, enabled: boolean) {
   return useQuery({
     queryKey: keys.match(id ?? ""),
     queryFn: () => api.match(id as string),
+    enabled: !!id && enabled,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+}
+
+/** Résumé-tailoring suggestions for one opportunity. On-demand, same reasoning. */
+export function useTailoring(id: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.tailoring(id ?? ""),
+    queryFn: () => api.tailoring(id as string),
     enabled: !!id && enabled,
     staleTime: 10 * 60_000,
     retry: false,

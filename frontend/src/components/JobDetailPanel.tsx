@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { useHide, useJobDetail, useMatch, useProfile, usePublish } from "../hooks/queries";
+import {
+  useHide,
+  useJobDetail,
+  useMatch,
+  useProfile,
+  usePublish,
+  useTailoring,
+} from "../hooks/queries";
 import { formatDate, prettyLabel } from "../lib/format";
 import { useToast } from "./Toast";
 import { Chip, Logo, ScoreBadge, Spinner } from "./ui";
@@ -172,6 +179,8 @@ function DetailBody({ data, onClose }: { data: JobDetail; onClose?: () => void }
 
         <MatchSection jobId={job.id} />
 
+        <TailoringSection jobId={job.id} />
+
         <Description data={data} />
       </div>
     </div>
@@ -257,6 +266,111 @@ function MatchSection({ jobId }: { jobId: string }) {
           <MatchList title="Missing / gaps" items={data.match.missing_requirements} tone="rose" />
           <MatchList title="Emphasize when applying" items={data.match.suggested_emphasis} />
           <MatchList title="Concerns" items={data.match.concerns} tone="rose" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TailoringSection({ jobId }: { jobId: string }) {
+  const profile = useProfile();
+  const toast = useToast();
+  const [tailor, setTailor] = useState(false);
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+  const { data, isFetching, isError } = useTailoring(jobId, tailor);
+
+  useEffect(() => {
+    setTailor(false);
+    setDismissed(new Set());
+  }, [jobId]);
+
+  const hasProfile = profile.data?.exists;
+  const plan = data?.plan;
+
+  function copySummary() {
+    if (plan?.tailored_summary) {
+      navigator.clipboard.writeText(plan.tailored_summary);
+      toast("Tailored summary copied.", "success");
+    }
+  }
+
+  function toggle(i: number) {
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-sunken/40 p-4">
+      <h4 className="text-sm font-semibold text-ink">Tailor for this role</h4>
+
+      {!hasProfile ? (
+        <p className="mt-2 text-sm text-ink-subtle">
+          <Link to="/profile" className="text-accent hover:underline">Upload your résumé</Link>{" "}
+          to get tailoring suggestions.
+        </p>
+      ) : !tailor ? (
+        <button onClick={() => setTailor(true)}
+          className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink">
+          Suggest tailoring
+        </button>
+      ) : isFetching ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-ink-subtle">
+          <Spinner /> Drafting suggestions from your profile…
+        </div>
+      ) : isError || !data?.available ? (
+        <p className="mt-2 text-sm text-ink-subtle">
+          {data?.reason === "llm_unavailable"
+            ? "The LLM is offline right now — try again shortly."
+            : "Could not draft suggestions."}
+        </p>
+      ) : plan ? (
+        <div className="mt-3 space-y-4">
+          {plan.tailored_summary && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <h5 className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+                  Tailored summary
+                </h5>
+                <button onClick={copySummary} className="text-xs text-accent hover:underline">Copy</button>
+              </div>
+              <p className="rounded-lg bg-surface-raised p-2.5 text-sm text-ink">{plan.tailored_summary}</p>
+            </div>
+          )}
+
+          <MatchList title="Emphasize" items={plan.emphasize} tone="emerald" />
+
+          {plan.suggestions?.length > 0 && (
+            <div className="space-y-1.5">
+              <h5 className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+                Suggestions (accept or dismiss)
+              </h5>
+              {plan.suggestions.map((s, i) => (
+                <div key={i} className={`rounded-lg border border-border p-2.5 text-sm ${dismissed.has(i) ? "opacity-40" : ""}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-[11px] font-medium uppercase text-accent">{s.kind}{s.section ? ` · ${s.section}` : ""}</span>
+                    <button onClick={() => toggle(i)} className="shrink-0 text-xs text-ink-subtle hover:text-ink">
+                      {dismissed.has(i) ? "Restore" : "Dismiss"}
+                    </button>
+                  </div>
+                  {s.suggested && <p className="mt-1 text-ink">{s.suggested}</p>}
+                  {s.rationale && <p className="mt-0.5 text-xs text-ink-subtle">Why: {s.rationale}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {plan.do_not_fabricate?.length > 0 && (
+            <div className="rounded-lg bg-rose-500/10 p-2.5">
+              <MatchList title="Don't fabricate — real gaps" items={plan.do_not_fabricate} tone="rose" />
+            </div>
+          )}
+          <MatchList title="Keyword cautions" items={plan.keyword_cautions} />
+          <p className="text-xs text-ink-subtle">
+            These only rearrange and reword what your profile already contains — nothing here is invented.
+          </p>
         </div>
       ) : null}
     </div>

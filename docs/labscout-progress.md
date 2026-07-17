@@ -71,7 +71,15 @@ Tick items as they land. Last updated: 2026-07-17.
       endpoint — deferred).
 
 ### Phase 5 — résumé tailoring
-- [ ] Suggested edits + diff + accept/reject; sandboxed LaTeX compile; PDF preview
+- [x] **Tailoring suggestions** — LLM drafts a tailored summary + reversible suggestions
+      (emphasize / reword / reorder / shorten / highlight-skill) each cited to the posting, plus
+      `do_not_fabricate` gap warnings and keyword-stuffing cautions. NEVER invents — only
+      rearranges/rewords existing profile content. `TailoringPlan` model, migration v12 cache,
+      `suggest_tailoring` (disable_thinking), `GET /api/jobs/{id}/tailoring`, and a "Tailor for this
+      role" panel (on-demand, per-suggestion accept/dismiss, copy tailored summary). Code + tests
+      complete; live demo is LLM-GPU-blocked like match.
+- [ ] Sandboxed LaTeX compile + PDF preview — deferred: needs a TeX toolchain (not installed;
+      `bwrap`/`docker` are available) and a `.tex`/ZIP résumé (current upload is PDF).
 
 ### Phase 6 — research intelligence & launch
 - [ ] Lab/PI context (OpenAlex/ORCID/arXiv/DBLP); application-material generation; launch hardening

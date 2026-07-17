@@ -116,6 +116,12 @@ def match(job_id: str) -> dict:
     return svc.match_job(job_id)
 
 
+@router.get("/jobs/{job_id:path}/tailoring")
+def tailoring(job_id: str) -> dict:
+    """Reversible suggestions for tailoring the résumé to this opportunity."""
+    return svc.tailor_job(job_id)
+
+
 # --- search --------------------------------------------------------------
 
 

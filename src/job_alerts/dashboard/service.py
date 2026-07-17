@@ -1071,6 +1071,51 @@ def match_job(job_id: str) -> dict:
     return {"available": True, "cached": False, "match": payload}
 
 
+def tailor_job(job_id: str) -> dict:
+    """Suggest how to tailor the stored profile's résumé to one opportunity,
+    cache-first. Same `{"available": bool, ...}` contract as `match_job`."""
+    import hashlib
+
+    from ..llm.assist import TAILORING_PROMPT_VERSION, suggest_tailoring
+    from ..profile import TailoringPlan
+
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        prow = db.get_profile()
+        if prow is None:
+            return {"available": False, "reason": "no_profile"}
+        job = db.get(job_id)
+        if job is None:
+            return {"available": False, "reason": "unknown_job"}
+
+        profile_json = prow["profile_json"]
+        profile_hash = hashlib.sha256(profile_json.encode("utf-8")).hexdigest()
+        cached = db.get_tailoring(job_id, job.content_hash, profile_hash, TAILORING_PROMPT_VERSION)
+        if cached is not None:
+            return {"available": True, "cached": True, "plan": cached}
+
+    result = asyncio.run(
+        suggest_tailoring(profile_json, _job_match_block(job), cfg.settings.llm, cfg.secrets)
+    )
+    if result is None:
+        return {"available": False, "reason": "llm_unavailable"}
+    try:
+        plan = TailoringPlan.model_validate({**result, "job_id": job_id})
+    except Exception as exc:
+        logger.info("tailoring validation failed: %s", exc)
+        return {"available": False, "reason": "unparseable"}
+
+    payload = plan.model_dump(mode="json")
+    with Database(cfg.db_path) as db:
+        try:
+            db.save_tailoring(
+                job_id, job.content_hash, profile_hash, TAILORING_PROMPT_VERSION, payload
+            )
+        except Exception as exc:
+            logger.debug("could not cache tailoring for %s: %s", job_id, exc)
+    return {"available": True, "cached": False, "plan": payload}
+
+
 # ---------------------------------------------------------------------------
 # Search (fetch)
 # ---------------------------------------------------------------------------

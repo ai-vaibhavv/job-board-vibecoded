@@ -243,3 +243,26 @@ export interface MatchResponse {
   cached?: boolean;
   match?: MatchAnalysis;
 }
+
+export interface TailoringSuggestion {
+  kind: string;
+  section: string;
+  current: string;
+  suggested: string;
+  rationale: string;
+}
+export interface TailoringPlan {
+  job_id: string;
+  tailored_summary: string;
+  emphasize: string[];
+  suggestions: TailoringSuggestion[];
+  do_not_fabricate: string[];
+  keyword_cautions: string[];
+  confidence: string;
+}
+export interface TailoringResponse {
+  available: boolean;
+  reason?: string;
+  cached?: boolean;
+  plan?: TailoringPlan;
+}

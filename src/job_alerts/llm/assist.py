@@ -354,3 +354,52 @@ async def analyze_match(
         logger.info("could not parse match reply: %s", exc)
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+TAILORING_PROMPT_VERSION = 1
+"""Bump when a change here would change a tailoring plan (Phase 5)."""
+
+_TAILORING_SYSTEM = (
+    "You advise a student on tailoring their EXISTING résumé to a specific "
+    "opportunity. The cardinal rule: NEVER fabricate. You only reorder, emphasise, "
+    "reword or trim what the profile already contains — you never add a skill, a "
+    "result, a grade or an experience the person did not state. Where the résumé "
+    "genuinely lacks something the role wants, you say so honestly rather than "
+    "papering over it, and you warn against keyword-stuffing. You reply with valid "
+    "JSON only — no prose."
+)
+
+
+async def suggest_tailoring(
+    profile_json: str, job_block: str, llm: LlmSettings, secrets: Secrets
+) -> dict | None:
+    """Suggest reversible ways to tailor the profile's résumé to one opportunity.
+    Best-effort: None when the endpoint is down or the reply is unusable."""
+    user = (
+        "Given this STUDENT PROFILE and this OPPORTUNITY, suggest how to tailor the "
+        "résumé. Use ONLY facts already in the profile — never invent. For each "
+        "suggestion cite the posting (why it helps). Flag genuine gaps under "
+        "do_not_fabricate instead of inventing them, and note where keyword-stuffing "
+        "would ring false.\n\n"
+        "Return JSON with exactly this shape and nothing else:\n"
+        "{\n"
+        '  "tailored_summary": "a 2-3 sentence summary for THIS role, only real facts",\n'
+        '  "emphasize": ["real projects/experience/skills to foreground, cited"],\n'
+        '  "suggestions": [{"kind":"emphasize|reword|reorder|shorten|highlight_skill|summary",'
+        '"section":"", "current":"", "suggested":"", "rationale":"cite the posting"}],\n'
+        '  "do_not_fabricate": ["gaps the résumé really has — do NOT invent these"],\n'
+        '  "keyword_cautions": ["where stuffing the posting keywords would ring false"],\n'
+        '  "confidence": "low|medium|high"\n'
+        "}\n\n"
+        f"STUDENT PROFILE:\n{profile_json}\n\n"
+        f"OPPORTUNITY:\n{job_block}"
+    )
+    reply = await _chat(llm, secrets, _TAILORING_SYSTEM, user, max_tokens=1200)
+    if reply is None:
+        return None
+    try:
+        parsed = _extract_json(reply)
+    except Exception as exc:
+        logger.info("could not parse tailoring reply: %s", exc)
+        return None
+    return parsed if isinstance(parsed, dict) else None

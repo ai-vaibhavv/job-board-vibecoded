@@ -225,3 +225,56 @@ class MatchAnalysis(BaseModel):
     @classmethod
     def _coerce_lists(cls, value: object) -> object:
         return _coerce_str_list(value)
+
+
+class TailoringSuggestion(BaseModel):
+    """One proposed, reversible edit to the résumé for a specific opportunity.
+
+    A suggestion only ever REARRANGES, EMPHASISES, REWORDS or TRIMS content the
+    profile already contains — it never adds a skill, a result or an experience the
+    person did not claim. The user accepts or rejects each one individually.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "reword"
+    """emphasize | reword | reorder | shorten | highlight_skill | summary."""
+    section: str = ""
+    """Which part of the résumé this touches (a project name, "Summary", "Skills")."""
+    current: str = ""
+    """What is there now, when relevant — so the UI can show a before/after."""
+    suggested: str = ""
+    """The proposed wording or action."""
+    rationale: str = ""
+    """Why, citing the posting (e.g. "the role stresses ROS, which this bullet buries")."""
+
+
+class TailoringPlan(BaseModel):
+    """A reversible plan for tailoring the résumé to one opportunity. Nothing here
+    is applied automatically; it is advice the user reviews."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    job_id: str = ""
+    tailored_summary: str = ""
+    """A rewritten summary/objective for this role, built ONLY from real facts."""
+    emphasize: list[str] = Field(default_factory=list)
+    """Real projects/experience/skills to foreground for this role, cited."""
+    suggestions: list[TailoringSuggestion] = Field(default_factory=list)
+    do_not_fabricate: list[str] = Field(default_factory=list)
+    """Gaps the résumé genuinely has — flagged so the user does NOT invent them to
+    fit, and can decide whether to address them honestly."""
+    keyword_cautions: list[str] = Field(default_factory=list)
+    """Where blindly stuffing the posting's keywords would ring false."""
+    confidence: str = "medium"
+
+    _coerce = field_validator("emphasize", "do_not_fabricate", "keyword_cautions", mode="before")(
+        staticmethod(_coerce_str_list)
+    )
+
+    @field_validator("suggestions", mode="before")
+    @classmethod
+    def _drop_bad_suggestions(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)]
+        return []

@@ -306,6 +306,18 @@ _MIGRATIONS: list[str] = [
         analyzed_at    TEXT NOT NULL
     );
     """,
+    # v12 — résumé-tailoring plan cache (Phase 5). Same keying as the match cache
+    # (job content + profile + prompt version); cleared when the profile is deleted.
+    """
+    CREATE TABLE IF NOT EXISTS job_tailoring (
+        job_id         TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash   TEXT NOT NULL,
+        profile_hash   TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        plan_json      TEXT NOT NULL,
+        tailored_at    TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -1073,6 +1085,7 @@ class Database:
             conn.execute("DELETE FROM profile WHERE id = 1")
             conn.execute("DELETE FROM profile_uploads")
             conn.execute("DELETE FROM job_match")
+            conn.execute("DELETE FROM job_tailoring")
 
     # -- match analysis cache (Phase 4) -----------------------------------
 
@@ -1124,6 +1137,58 @@ class Database:
                     profile_hash,
                     prompt_version,
                     json.dumps(match),
+                    _dt(when or datetime.now(UTC)),
+                ),
+            )
+
+    # -- résumé tailoring cache (Phase 5) ---------------------------------
+
+    def get_tailoring(
+        self, job_id: str, content_hash: str, profile_hash: str, prompt_version: int
+    ) -> dict | None:
+        row = self._conn.execute(
+            """
+            SELECT plan_json FROM job_tailoring
+            WHERE job_id = ? AND content_hash = ? AND profile_hash = ? AND prompt_version = ?
+            """,
+            (job_id, content_hash, profile_hash, prompt_version),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["plan_json"])
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            logger.warning("cached tailoring for %s is not valid json; ignoring", job_id)
+            return None
+
+    def save_tailoring(
+        self,
+        job_id: str,
+        content_hash: str,
+        profile_hash: str,
+        prompt_version: int,
+        plan: dict,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_tailoring
+                    (job_id, content_hash, profile_hash, prompt_version, plan_json, tailored_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hash   = excluded.content_hash,
+                    profile_hash   = excluded.profile_hash,
+                    prompt_version = excluded.prompt_version,
+                    plan_json      = excluded.plan_json,
+                    tailored_at    = excluded.tailored_at
+                """,
+                (
+                    job_id,
+                    content_hash,
+                    profile_hash,
+                    prompt_version,
+                    json.dumps(plan),
                     _dt(when or datetime.now(UTC)),
                 ),
             )

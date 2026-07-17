@@ -12,6 +12,7 @@ import type {
   Meta,
   ProfileResponse,
   ResumeResult,
+  TailoringResponse,
   SearchPreview,
   SearchTask,
   SettingsStatus,
@@ -64,6 +65,9 @@ export const api = {
   job: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}`),
 
   match: (id: string) => request<MatchResponse>(`/jobs/${encodeURIComponent(id)}/match`),
+
+  tailoring: (id: string) =>
+    request<TailoringResponse>(`/jobs/${encodeURIComponent(id)}/tailoring`),
 
   refresh: (id: string) =>
     request<JobDetail>(`/jobs/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
