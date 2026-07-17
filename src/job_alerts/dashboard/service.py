@@ -1116,6 +1116,38 @@ def tailor_job(job_id: str) -> dict:
     return {"available": True, "cached": False, "plan": payload}
 
 
+_RESEARCH_MAX_AGE_DAYS = 30
+
+
+def research_for_job(job_id: str) -> dict:
+    """Research-group intelligence (OpenAlex) for an opportunity's institution,
+    cache-first. No LLM involved — works regardless of the model's state."""
+    import hashlib
+
+    from ..research import research_context
+
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        job = db.get(job_id)
+        if job is None:
+            return {"available": False, "reason": "unknown_job"}
+        org = job.organization
+        field = job.academic_field or ""
+        query_key = hashlib.sha256(f"{(org or '').lower()}|{field}".encode()).hexdigest()
+        cached = db.get_research(job_id, query_key, _RESEARCH_MAX_AGE_DAYS)
+        if cached is not None:
+            return {**cached, "cached": True}
+
+    result = asyncio.run(research_context(org, field))
+    if result.get("available"):
+        with Database(cfg.db_path) as db:
+            try:
+                db.save_research(job_id, query_key, result)
+            except Exception as exc:
+                logger.debug("could not cache research for %s: %s", job_id, exc)
+    return {**result, "cached": False}
+
+
 # ---------------------------------------------------------------------------
 # Search (fetch)
 # ---------------------------------------------------------------------------

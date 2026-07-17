@@ -82,7 +82,11 @@ Tick items as they land. Last updated: 2026-07-17.
       `bwrap`/`docker` are available) and a `.tex`/ZIP résumé (current upload is PDF).
 
 ### Phase 6 — research intelligence & launch
-- [ ] Lab/PI context (OpenAlex/ORCID/arXiv/DBLP); application-material generation; launch hardening
+- [x] **Research-group intelligence (OpenAlex)** — given an opportunity's institution, resolve it on
+      OpenAlex and surface what the group works on + recent papers to read before applying. Keyless,
+      non-LLM, cached (migration v13, 30-day TTL). `research.py`, `GET /api/jobs/{id}/research`, and a
+      "Research group" panel (auto-loads). Validated live (Fraunhofer FKIE → real 2026 papers).
+- [ ] ORCID/arXiv/DBLP PI enrichment; application-material generation (LLM); launch hardening
 - [ ] Optional internal rename (`job_alerts` → labscout, `jobs` table → opportunities)
 
 ## Notes

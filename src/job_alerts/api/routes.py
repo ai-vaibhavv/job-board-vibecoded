@@ -122,6 +122,12 @@ def tailoring(job_id: str) -> dict:
     return svc.tailor_job(job_id)
 
 
+@router.get("/jobs/{job_id:path}/research")
+def research(job_id: str) -> dict:
+    """Research-group intelligence (OpenAlex) for this opportunity's institution."""
+    return svc.research_for_job(job_id)
+
+
 # --- search --------------------------------------------------------------
 
 

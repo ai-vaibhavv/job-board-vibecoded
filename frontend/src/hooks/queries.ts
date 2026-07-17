@@ -17,6 +17,7 @@ export const keys = {
   profile: ["profile"] as const,
   match: (id: string) => ["match", id] as const,
   tailoring: (id: string) => ["tailoring", id] as const,
+  research: (id: string) => ["research", id] as const,
 };
 
 export function useMeta() {
@@ -168,6 +169,18 @@ export function useTailoring(id: string | null, enabled: boolean) {
     queryFn: () => api.tailoring(id as string),
     enabled: !!id && enabled,
     staleTime: 10 * 60_000,
+    retry: false,
+  });
+}
+
+/** Research-group intelligence (OpenAlex). Auto-loads with the job — it's a fast,
+ * keyless, non-LLM lookup and is cached server-side. */
+export function useResearch(id: string | null) {
+  return useQuery({
+    queryKey: keys.research(id ?? ""),
+    queryFn: () => api.research(id as string),
+    enabled: !!id,
+    staleTime: 30 * 60_000,
     retry: false,
   });
 }

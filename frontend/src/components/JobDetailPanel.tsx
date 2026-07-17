@@ -6,6 +6,7 @@ import {
   useMatch,
   useProfile,
   usePublish,
+  useResearch,
   useTailoring,
 } from "../hooks/queries";
 import { formatDate, prettyLabel } from "../lib/format";
@@ -180,6 +181,8 @@ function DetailBody({ data, onClose }: { data: JobDetail; onClose?: () => void }
         <MatchSection jobId={job.id} />
 
         <TailoringSection jobId={job.id} />
+
+        <ResearchSection jobId={job.id} />
 
         <Description data={data} />
       </div>
@@ -373,6 +376,85 @@ function TailoringSection({ jobId }: { jobId: string }) {
           </p>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ResearchSection({ jobId }: { jobId: string }) {
+  const { data, isFetching } = useResearch(jobId);
+
+  // Auto-loads; stay quiet until there's something to show (no institution match
+  // is common and shouldn't clutter the panel).
+  if (isFetching) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-ink-subtle">
+        <Spinner /> Looking up the research group…
+      </div>
+    );
+  }
+  if (!data?.available || !data.institution) return null;
+  const inst = data.institution;
+  const works = data.recent_works ?? [];
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-sunken/40 p-4">
+      <h4 className="text-sm font-semibold text-ink">Research group</h4>
+      <p className="mt-1 text-sm text-ink-muted">
+        {inst.homepage_url || inst.openalex_url ? (
+          <a href={inst.homepage_url || inst.openalex_url || "#"} target="_blank" rel="noreferrer"
+            className="text-accent hover:underline">
+            {inst.display_name}
+          </a>
+        ) : (
+          inst.display_name
+        )}
+        {inst.country_code && <span className="text-ink-subtle"> · {inst.country_code}</span>}
+        {inst.works_count != null && (
+          <span className="text-ink-subtle"> · {inst.works_count.toLocaleString()} works</span>
+        )}
+        <span className="text-ink-subtle"> · via OpenAlex</span>
+      </p>
+
+      {inst.research_areas.length > 0 && (
+        <div className="mt-2">
+          <Chips items={inst.research_areas} />
+        </div>
+      )}
+
+      {works.length > 0 && (
+        <div className="mt-3 space-y-2">
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+            Recent papers {data.field_filtered ? "in this field" : ""} — worth a skim before applying
+          </h5>
+          <ul className="space-y-1.5 text-sm">
+            {works.map((w, i) => (
+              <li key={i}>
+                {w.url ? (
+                  <a href={w.url} target="_blank" rel="noreferrer" className="text-ink hover:text-accent hover:underline">
+                    {w.title}
+                  </a>
+                ) : (
+                  <span className="text-ink">{w.title}</span>
+                )}
+                {w.year && <span className="text-ink-subtle"> ({w.year})</span>}
+                {w.authors.length > 0 && (
+                  <span className="text-ink-subtle"> — {w.authors.slice(0, 3).join(", ")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Chips({ items }: { items: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((t, i) => (
+        <Chip key={`${t}-${i}`}>{t}</Chip>
+      ))}
     </div>
   );
 }

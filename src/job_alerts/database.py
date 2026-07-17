@@ -318,6 +318,21 @@ _MIGRATIONS: list[str] = [
         tailored_at    TEXT NOT NULL
     );
     """,
+    # v13 — research-group intelligence cache (Phase 6, OpenAlex).
+    #
+    # Keyed on job_id plus `query_key` (a hash of the institution+field looked up),
+    # so it survives an org change and a caller-side TTL decides staleness — a
+    # group's research profile drifts over months, not minutes, so there is no
+    # content_hash here. Not profile-dependent, so it is NOT cleared on profile
+    # delete.
+    """
+    CREATE TABLE IF NOT EXISTS job_research (
+        job_id       TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        query_key    TEXT NOT NULL,
+        research_json TEXT NOT NULL,
+        fetched_at   TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -1191,6 +1206,41 @@ class Database:
                     json.dumps(plan),
                     _dt(when or datetime.now(UTC)),
                 ),
+            )
+
+    # -- research-group intelligence cache (Phase 6) ----------------------
+
+    def get_research(self, job_id: str, query_key: str, max_age_days: int) -> dict | None:
+        """A cached OpenAlex snapshot for this job, if the same institution/field
+        was looked up within `max_age_days`. Otherwise None (re-fetch)."""
+        row = self._conn.execute(
+            "SELECT research_json, fetched_at FROM job_research WHERE job_id = ? AND query_key = ?",
+            (job_id, query_key),
+        ).fetchone()
+        if row is None:
+            return None
+        fetched = _parse_dt(row["fetched_at"])
+        if fetched and datetime.now(UTC) - fetched > timedelta(days=max_age_days):
+            return None
+        try:
+            return json.loads(row["research_json"])
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            return None
+
+    def save_research(
+        self, job_id: str, query_key: str, research: dict, when: datetime | None = None
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_research (job_id, query_key, research_json, fetched_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    query_key     = excluded.query_key,
+                    research_json = excluded.research_json,
+                    fetched_at    = excluded.fetched_at
+                """,
+                (job_id, query_key, json.dumps(research), _dt(when or datetime.now(UTC))),
             )
 
     def purge_old_rejected(self, retention_days: int) -> int:

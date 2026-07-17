@@ -266,3 +266,28 @@ export interface TailoringResponse {
   cached?: boolean;
   plan?: TailoringPlan;
 }
+
+export interface ResearchWork {
+  title: string;
+  year: number | null;
+  doi: string | null;
+  url: string | null;
+  authors: string[];
+}
+export interface ResearchInstitution {
+  id: string;
+  display_name: string | null;
+  country_code: string | null;
+  works_count: number | null;
+  homepage_url: string | null;
+  openalex_url: string | null;
+  research_areas: string[];
+}
+export interface ResearchResponse {
+  available: boolean;
+  reason?: string;
+  cached?: boolean;
+  institution?: ResearchInstitution;
+  recent_works?: ResearchWork[];
+  field_filtered?: boolean;
+}
