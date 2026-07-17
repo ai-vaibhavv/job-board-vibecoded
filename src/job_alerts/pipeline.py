@@ -47,6 +47,11 @@ _NO_TOPIC_SCORE_CAP = 45
 """Ceiling for a job the LLM says matches none of the user's topics. Sits below
 every sensible notify threshold, so such jobs are stored but never sent."""
 
+_UNHEALTHY_STREAK = 3
+"""How many runs in a row a source may come back empty or erroring before it is
+flagged as ailing. One bad run is noise; three is a rotted selector or a moved
+feed worth a look."""
+
 
 class Pipeline:
     """One complete search run."""
@@ -116,6 +121,8 @@ class Pipeline:
 
             candidates = self._collect(results, summary)
             summary.candidates_found = len(candidates)
+            if not dry_run:
+                self._record_source_health(results, summary)
 
             jobs = self._normalize_and_dedupe(candidates)
             summary.after_dedup = len(jobs)
@@ -182,6 +189,36 @@ class Pipeline:
                 result.duration_seconds,
             )
         return candidates
+
+    def _record_source_health(self, results: list[SourceResult], summary: RunSummary) -> None:
+        """Fold this run's per-source outcomes into rolling health, and flag any
+        source that has been ailing for `_UNHEALTHY_STREAK` runs."""
+        when = datetime.now(UTC)
+        for result in results:
+            if result.skipped_reason:
+                status, count, error = "skipped", 0, None
+            elif result.error:
+                status, count, error = "error", 0, result.error
+            elif not result.candidates:
+                # A 200 that parsed to nothing is the signature of a broken
+                # selector — the request worked, the extraction did not.
+                status, count, error = "empty", 0, None
+            else:
+                status, count, error = "ok", len(result.candidates), None
+            try:
+                self.db.record_source_health(result.source, status, count, error, when)
+            except Exception as exc:  # health is diagnostics, never worth a crash
+                logger.debug("could not record health for %s: %s", result.source, exc)
+
+        for health in self.db.get_source_health():
+            if health["consecutive_errors"] >= _UNHEALTHY_STREAK:
+                summary.unhealthy_sources[health["source"]] = (
+                    f"errored {health['consecutive_errors']} runs in a row"
+                )
+            elif health["consecutive_empty"] >= _UNHEALTHY_STREAK:
+                summary.unhealthy_sources[health["source"]] = (
+                    f"returned 0 for {health['consecutive_empty']} runs — selector may be broken"
+                )
 
     def _normalize_and_dedupe(self, candidates: list) -> list[Job]:
         """Normalize, then collapse duplicates *within this run*.

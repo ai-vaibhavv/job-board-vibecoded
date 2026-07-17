@@ -234,6 +234,28 @@ _MIGRATIONS: list[str] = [
         classified_at   TEXT NOT NULL
     );
     """,
+    # v9 — per-source health, so a source that silently rots (a renamed CSS
+    # selector, a moved feed) is noticed instead of just quietly returning zero.
+    #
+    # A side table keyed by source name — not tied to `jobs`, and updated once per
+    # run from the SourceResults. `consecutive_empty` catches a broken parser (the
+    # request still 200s, but nothing matches), `consecutive_errors` catches an
+    # outright failure; either crossing a threshold is surfaced in the run summary
+    # and by `source-health`. A skipped source (no API key) never counts as
+    # unhealthy — that is a configuration choice, not a fault.
+    """
+    CREATE TABLE IF NOT EXISTS source_health (
+        source              TEXT PRIMARY KEY,
+        last_run_at         TEXT NOT NULL,
+        last_status         TEXT NOT NULL,
+        last_candidates     INTEGER NOT NULL DEFAULT 0,
+        last_error          TEXT,
+        last_ok_at          TEXT,
+        consecutive_empty   INTEGER NOT NULL DEFAULT 0,
+        consecutive_errors  INTEGER NOT NULL DEFAULT 0,
+        total_runs          INTEGER NOT NULL DEFAULT 0
+    );
+    """,
 ]
 
 
@@ -829,6 +851,74 @@ class Database:
                 "INSERT INTO runs (started_at, finished_at, summary_json) VALUES (?,?,?)",
                 (_dt(started_at), _dt(finished_at), summary_json),
             )
+
+    # -- source health ----------------------------------------------------
+
+    def record_source_health(
+        self,
+        source: str,
+        status: str,
+        candidates: int = 0,
+        error: str | None = None,
+        when: datetime | None = None,
+    ) -> None:
+        """Fold one run's outcome for a source into its rolling health.
+
+        `status` is "ok" (candidates found), "empty" (200 but nothing parsed —
+        the tell-tale of a broken selector), "error", or "skipped". A skipped
+        source leaves the consecutive counters untouched: it is a config choice,
+        not a fault. Everything else advances or resets the streaks.
+        """
+        now = _dt(when or datetime.now(UTC))
+        row = self._conn.execute(
+            "SELECT consecutive_empty, consecutive_errors, total_runs, last_ok_at "
+            "FROM source_health WHERE source = ?",
+            (source,),
+        ).fetchone()
+        empty = row["consecutive_empty"] if row else 0
+        errors = row["consecutive_errors"] if row else 0
+        total = (row["total_runs"] if row else 0) + 1
+        last_ok = row["last_ok_at"] if row else None
+
+        if status == "ok":
+            empty, errors, last_ok = 0, 0, now
+        elif status == "empty":
+            empty, errors = empty + 1, 0
+        elif status == "error":
+            errors += 1
+        # "skipped": leave streaks as they were.
+
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO source_health (
+                    source, last_run_at, last_status, last_candidates, last_error,
+                    last_ok_at, consecutive_empty, consecutive_errors, total_runs
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(source) DO UPDATE SET
+                    last_run_at        = excluded.last_run_at,
+                    last_status        = excluded.last_status,
+                    last_candidates    = excluded.last_candidates,
+                    last_error         = excluded.last_error,
+                    last_ok_at         = excluded.last_ok_at,
+                    consecutive_empty  = excluded.consecutive_empty,
+                    consecutive_errors = excluded.consecutive_errors,
+                    total_runs         = excluded.total_runs
+                """,
+                (source, now, status, candidates, error, last_ok, empty, errors, total),
+            )
+
+    def get_source_health(self) -> list[dict]:
+        """Every source's current health, worst first."""
+        rows = self._conn.execute(
+            """
+            SELECT source, last_run_at, last_status, last_candidates, last_error,
+                   last_ok_at, consecutive_empty, consecutive_errors, total_runs
+            FROM source_health
+            ORDER BY consecutive_errors DESC, consecutive_empty DESC, source
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def purge_old_rejected(self, retention_days: int) -> int:
         """Drop stale rejected jobs. Returns rows removed."""

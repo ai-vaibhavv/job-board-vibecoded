@@ -210,6 +210,10 @@ class RunSummary(BaseModel):
     sources_ok: list[str] = Field(default_factory=list)
     sources_failed: dict[str, str] = Field(default_factory=dict)
     sources_skipped: dict[str, str] = Field(default_factory=dict)
+    unhealthy_sources: dict[str, str] = Field(default_factory=dict)
+    """Sources whose rolling health crossed a warning threshold (repeatedly empty
+    or erroring), source -> reason. A source failing once is normal; failing every
+    run means a rotted selector or a moved feed that needs a look."""
     candidates_found: int = 0
     after_dedup: int = 0
     passed_filter: int = 0
@@ -255,6 +259,10 @@ class RunSummary(BaseModel):
             lines.append(f"  Sources FAILED  : {len(self.sources_failed)}")
             for name, why in self.sources_failed.items():
                 lines.append(f"      - {name}: {why}")
+        if self.unhealthy_sources:
+            lines.append(f"  Sources AILING  : {len(self.unhealthy_sources)}")
+            for name, why in self.unhealthy_sources.items():
+                lines.append(f"      ⚠ {name}: {why}")
         if self.llm_assessed or self.llm_fallback:
             lines.append(
                 f"  LLM assessed    : {self.llm_assessed}"

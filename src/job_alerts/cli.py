@@ -26,6 +26,10 @@ from .scheduler import JobScheduler, RunLockedError, run_once
 
 logger = logging.getLogger(__name__)
 
+_UNHEALTHY_STREAK_CLI = 3
+"""Empty-run streak at which `source-health` flags a source; mirrors the
+pipeline's `_UNHEALTHY_STREAK`."""
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -75,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--explain", action="store_true", help="show the score breakdown")
 
     sub.add_parser("stats", help="show database statistics")
+    sub.add_parser("source-health", help="show per-source health (spot rotted sources)")
     sub.add_parser("run-scheduler", help="run continuously on the configured schedule")
 
     export = sub.add_parser("export", help="export stored jobs")
@@ -204,6 +209,34 @@ def cmd_stats(args: argparse.Namespace) -> int:
     last = stats["last_run"]
     if last:
         print(f"\nLast run: {last['started_at']} → {last['finished_at']}")
+    print()
+    return 0
+
+
+def cmd_source_health(args: argparse.Namespace) -> int:
+    settings, _, _ = _load(args)
+    with Database(settings.database.path) as db:
+        rows = db.get_source_health()
+
+    if not rows:
+        print("\nNo source health recorded yet — run a search first.\n")
+        return 0
+
+    print("\nSource health (worst first):")
+    for h in rows:
+        streak = ""
+        if h["consecutive_errors"]:
+            streak = f"  ⚠ errored ×{h['consecutive_errors']}"
+        elif h["consecutive_empty"] >= _UNHEALTHY_STREAK_CLI:
+            streak = f"  ⚠ empty ×{h['consecutive_empty']} (selector may be broken)"
+        elif h["consecutive_empty"]:
+            streak = f"  empty ×{h['consecutive_empty']}"
+        print(
+            f"  {h['source']:24s} {h['last_status']:8s} "
+            f"last={h['last_candidates']:>3} jobs  runs={h['total_runs']}{streak}"
+        )
+        if h["last_error"]:
+            print(f"      last error: {h['last_error'][:100]}")
     print()
     return 0
 
@@ -408,6 +441,7 @@ _COMMANDS = {
     "send-test": cmd_send_test,
     "list": cmd_list,
     "stats": cmd_stats,
+    "source-health": cmd_source_health,
     "run-scheduler": cmd_run_scheduler,
     "export": cmd_export,
     "check-source": cmd_check_source,
