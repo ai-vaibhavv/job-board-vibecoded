@@ -177,13 +177,16 @@ class ColabProvider:
         model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ",
         timeout: float = 60.0,
         max_output_tokens: int = 0,
+        disable_thinking: bool = False,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.endpoint = f"{self.base_url}/v1/chat/completions"
+        self.native_endpoint = f"{self.base_url}/api/chat"
         self.api_key = api_key
         self.model = model
         self.max_output_tokens = max_output_tokens
+        self.disable_thinking = disable_thinking
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
 
@@ -192,11 +195,23 @@ class ColabProvider:
             await self._client.aclose()
 
     async def _chat(self, system: str, user: str) -> str:
-        """One chat-completions round-trip; returns the reply text.
+        """One chat round-trip; returns the reply text.
 
         Shared by Pass 1 (`assess`) and Pass 2 (`classify_details`) — the only
         difference between the two calls is which prompt goes in.
+
+        A reasoning model (e.g. a Qwen3 served by Ollama) spends its whole token
+        budget in a separate `reasoning` field and leaves `content` EMPTY, so
+        every batch silently falls back to keyword scoring. Ollama's OpenAI-compat
+        `/v1` layer ignores any request to disable that, but its NATIVE `/api/chat`
+        honours `think: false` — which turns a 200s empty reply into a 2s JSON one.
+        So when `disable_thinking` is set we speak the native protocol instead.
         """
+        if self.disable_thinking:
+            return await self._chat_native(system, user)
+        return await self._chat_openai(system, user)
+
+    async def _chat_openai(self, system: str, user: str) -> str:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -227,6 +242,39 @@ class ColabProvider:
         if not choices:
             raise LlmError("colab returned no choices")
         return (choices[0].get("message") or {}).get("content") or ""
+
+    async def _chat_native(self, system: str, user: str) -> str:
+        """Ollama's native `/api/chat`, with reasoning turned off."""
+        options: dict[str, Any] = {"temperature": 0.0}
+        if self.max_output_tokens > 0:
+            options["num_predict"] = self.max_output_tokens
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "think": False,
+            "options": options,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            response = await self._client.post(self.native_endpoint, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise LlmError(f"colab request failed: {exc}", transient=True) from exc
+
+        if response.status_code != 200:
+            raise _http_error("colab", response)
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LlmError(f"colab returned non-JSON: {exc}") from exc
+
+        return (payload.get("message") or {}).get("content") or ""
 
     async def assess(self, jobs: list[Job], **prompt_kwargs: Any) -> list[JobAssessment]:
         prompt = build_user_prompt(jobs, **prompt_kwargs)

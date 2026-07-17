@@ -385,10 +385,17 @@ llm:
   max_description_chars: 700
 
   # Token budget for a reply. 0 = let the server decide. Set this when a
-  # self-hosted model returns EMPTY or truncated JSON (its default num_predict is
-  # too small, or a reasoning model spent its budget "thinking") — the batch then
-  # silently falls back to keyword scoring. 2048 comfortably fits a batch's JSON.
+  # self-hosted model returns truncated JSON (its default num_predict is too
+  # small) — the batch then silently falls back to keyword scoring. 2048
+  # comfortably fits a batch's JSON.
   max_output_tokens: 2048
+
+  # Turn OFF for a plain instruct model or a non-Ollama server. Turn ON for a
+  # REASONING model served by Ollama (e.g. Qwen3): otherwise it spends its whole
+  # token budget in a hidden `reasoning` field and returns EMPTY content, and the
+  # batch falls back to keyword scoring. On = speak Ollama's native /api/chat with
+  # think:false (~2s clean JSON instead of 200s of nothing).
+  disable_thinking: false
 
   # Run the cheap keyword filter first and only send survivors to the LLM.
   # Saves most of your quota. Set false to let the LLM see every candidate

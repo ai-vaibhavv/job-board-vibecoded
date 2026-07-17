@@ -299,9 +299,17 @@ class LlmSettings(BaseModel):
     max_output_tokens: int = 2048
     """Token budget for an assessment/detail reply. 0 = don't send `max_tokens`
     (let the server decide). A self-hosted server whose default `num_predict` is
-    small will otherwise truncate — or, for a reasoning model that spends tokens
-    "thinking", return EMPTY content — so the batch silently falls back to keyword
+    small will otherwise truncate — so the batch silently falls back to keyword
     scoring. Giving it explicit room is what stops that."""
+
+    disable_thinking: bool = False
+    """Speak Ollama's native `/api/chat` with `think: false` instead of the
+    OpenAI-compat `/v1/chat/completions`. Set this for a REASONING model (a Qwen3
+    served by Ollama): it otherwise spends its whole token budget in a hidden
+    `reasoning` field and returns EMPTY `content` (measured: 223s -> nothing),
+    which the pipeline reads as a failure and falls back to keyword scoring. With
+    thinking off the same call is ~2s of clean JSON. Leave false for a plain
+    instruct model or a non-Ollama OpenAI-compatible server."""
 
     translate_max_input_chars: int = 8000
     """Characters of a German posting sent to the dashboard translator. Higher =
