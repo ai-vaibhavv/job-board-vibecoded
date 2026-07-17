@@ -79,7 +79,15 @@ class Pipeline:
             phd_signals=settings.filtering.phd_requirement_signals,
         )
 
-    async def run(self, *, dry_run: bool = False) -> RunSummary:
+    async def run(self, *, dry_run: bool = False, incremental: bool = False) -> RunSummary:
+        """One search run.
+
+        `incremental` stores each job the moment its LLM verdict lands, instead of
+        all at once at the end, so a UI polling the database sees the board fill
+        progressively during a slow run. The final `_store` is still authoritative;
+        it uses a snapshot of what existed *before* the run (`known_before`) so the
+        early stores never confuse "new this run" or the notification set.
+        """
         started_at = datetime.now(UTC)
         summary = RunSummary(started_at=started_at, finished_at=started_at, dry_run=dry_run)
 
@@ -112,10 +120,21 @@ class Pipeline:
             jobs = self._normalize_and_dedupe(candidates)
             summary.after_dedup = len(jobs)
 
-            relevant = await self._filter_and_score(jobs, summary, client, dry_run=dry_run)
+            # Snapshot which jobs already existed BEFORE this run touches the DB.
+            # `_store` uses this instead of a live is_duplicate() so that
+            # incremental early-stores cannot make a job look "already known".
+            known_before = (
+                {} if dry_run else {j.id: self.db.is_duplicate(j) for j in jobs}
+            )
+
+            relevant = await self._filter_and_score(
+                jobs, summary, client, dry_run=dry_run, incremental=incremental
+            )
             summary.above_threshold = len(relevant)
 
-        to_notify = self._store(jobs, relevant, summary, dry_run=dry_run)
+        to_notify = self._store(
+            jobs, relevant, summary, dry_run=dry_run, known_before=known_before
+        )
         self._flush_assessments(dry_run=dry_run)
         self._flush_details(dry_run=dry_run)
         await self._notify(to_notify, summary, dry_run=dry_run)
@@ -192,7 +211,13 @@ class Pipeline:
         return jobs
 
     async def _filter_and_score(
-        self, jobs: list[Job], summary: RunSummary, client: PoliteClient, *, dry_run: bool = False
+        self,
+        jobs: list[Job],
+        summary: RunSummary,
+        client: PoliteClient,
+        *,
+        dry_run: bool = False,
+        incremental: bool = False,
     ) -> list[Job]:
         """Decide which jobs are worth sending.
 
@@ -272,10 +297,13 @@ class Pipeline:
                 ]
         summary.dropped_as_stale = len(survivors) - len(recent)
 
-        assessments = await self._assess_with_llm(recent, summary, dry_run=dry_run)
-        relevant = self._apply_scores(recent, assessments, summary)
-        # Pass 2: fine taxonomy, survivors only — pure enrichment, never a gate.
-        await self._classify_details(relevant, summary, dry_run=dry_run)
+        if incremental and not dry_run:
+            relevant = await self._assess_score_store_incrementally(recent, summary)
+        else:
+            assessments = await self._assess_with_llm(recent, summary, dry_run=dry_run)
+            relevant = self._apply_scores(recent, assessments, summary)
+            # Pass 2: fine taxonomy, survivors only — pure enrichment, never a gate.
+            await self._classify_details(relevant, summary, dry_run=dry_run)
         relevant.sort(key=lambda j: j.relevance_score, reverse=True)
         return relevant
 
@@ -547,6 +575,92 @@ class Pipeline:
         logger.debug("cached %d/%d detail(s)", saved, len(self._pending_details))
         self._pending_details.clear()
 
+    async def _assess_score_store_incrementally(
+        self, recent: list[Job], summary: RunSummary
+    ) -> list[Job]:
+        """Incremental variant of the LLM stage: assess, score, classify and
+        STORE each batch the moment it completes, so a UI polling the database
+        watches the board fill instead of waiting for the whole run.
+
+        Same cache-first, degrade-to-keywords contract as `_assess_with_llm` +
+        `_apply_scores` + `_classify_details`, just interleaved per batch. Only
+        ever called on a real (non-dry) run. The final `_store` in `run()` still
+        runs and stays authoritative for the not-yet-seen rejected jobs and for the
+        notification set; re-storing an already-stored job is an idempotent upsert.
+        """
+        relevant: list[Job] = []
+
+        async def process(
+            batch_jobs: list[Job], batch_assessments: dict[str, JobAssessment]
+        ) -> None:
+            batch_relevant = self._apply_scores(batch_jobs, batch_assessments, summary)
+            await self._classify_details(batch_relevant, summary, dry_run=False)
+            for job in batch_jobs:
+                try:
+                    self.db.upsert(job)
+                except Exception as exc:  # a display store must never kill the run
+                    logger.debug("incremental store failed for %s: %s", job.id, exc)
+            relevant.extend(batch_relevant)
+
+        llm = self.settings.llm
+        use_llm = bool(llm.enabled and self._llm_configured and recent)
+        cached = self._cached_assessments(recent) if use_llm else {}
+        summary.llm_cached = len(cached)
+        if cached:
+            await process([j for j in recent if j.id in cached], cached)
+
+        pending = [j for j in recent if j.id not in cached]
+        providers = build_providers(self.secrets, llm) if (use_llm and pending) else []
+
+        if not providers:
+            # LLM off / unconfigured / down — keyword-score the rest, still storing.
+            if pending:
+                await process(pending, {})
+            summary.llm_assessed = len(cached)
+            summary.llm_fallback = len(recent) - len(cached)
+            return relevant
+
+        assessor = LlmAssessor(
+            providers,
+            llm,
+            topics=self.settings.keywords.topics,
+            locations=self.settings.locations.include,
+            all_germany=self.settings.locations.all_germany,
+            core_ai_mode=self.settings.filtering.reject_non_core_ai,
+        )
+        # Live reference: `_apply_scores` reads it for the explanation, and the
+        # assessor fills it per batch before our callback runs.
+        self._llm_provider_used = assessor.provider_used
+
+        async def on_batch(batch_jobs: list[Job], batch_list: list[JobAssessment]) -> None:
+            by_id = {a.job_id: a for a in batch_list}
+            for job in batch_jobs:
+                assessment = by_id.get(job.id)
+                if assessment is not None:
+                    self._pending_assessments.append(
+                        (
+                            job.id,
+                            job.content_hash,
+                            assessment.model_dump(mode="json"),
+                            assessor.provider_used.get(job.id),
+                        )
+                    )
+            await process(batch_jobs, by_id)
+
+        try:
+            fresh = await assessor.assess_all(pending, on_batch=on_batch)
+        except Exception:
+            logger.exception("incremental llm assessment failed; unprocessed jobs keyword-scored")
+            fresh = {}
+        finally:
+            await assessor.aclose()
+
+        summary.llm_assessed = len(cached) + len(fresh)
+        summary.llm_fallback = len(recent) - summary.llm_assessed
+        if assessor.failures:
+            summary.llm_failures = assessor.failures[:5]
+        return relevant
+
     def _wrong_country(self, assessment: JobAssessment) -> str | None:
         """Is this job somewhere I cannot work? None means keep it.
 
@@ -664,11 +778,24 @@ class Pipeline:
         return relevant
 
     def _store(
-        self, jobs: list[Job], relevant: list[Job], summary: RunSummary, *, dry_run: bool
+        self,
+        jobs: list[Job],
+        relevant: list[Job],
+        summary: RunSummary,
+        *,
+        dry_run: bool,
+        known_before: dict[str, bool] | None = None,
     ) -> list[Job]:
         """Persist everything; return the jobs that still need notifying.
 
         Storing before sending is what makes a Discord outage harmless.
+
+        `known_before` is a snapshot of which job ids existed in the DB *before*
+        this run started. It decides "new this run" and the notification set — used
+        instead of a live `is_duplicate()` so that an incremental run, which has
+        already stored some of these jobs, does not read its own early writes as
+        "already known" and suppress every alert. Absent (or a missing id) falls
+        back to a live check, which is correct for a non-incremental run.
         """
         if dry_run:
             # A dry run must not touch the database either — otherwise the
@@ -678,13 +805,16 @@ class Pipeline:
             summary.newly_stored = 0
             return fresh[: self.settings.notifications.max_per_run]
 
+        known_before = known_before or {}
         relevant_ids = {j.id for j in relevant}
         to_notify: list[Job] = []
 
         for job in jobs:
-            already_known = self.db.is_duplicate(job)
-            is_new = self.db.upsert(job)
-            if is_new:
+            already_known = (
+                known_before[job.id] if job.id in known_before else self.db.is_duplicate(job)
+            )
+            self.db.upsert(job)
+            if not already_known:
                 summary.newly_stored += 1
             if job.id in relevant_ids and not already_known:
                 to_notify.append(job)

@@ -919,7 +919,9 @@ def run_search(keywords: str, topics: list[str] | None, locations: list[str] | N
 
     try:
         summary = asyncio.run(
-            run_once(settings, sources, cfg.secrets, dry_run=False, use_lock=True)
+            run_once(
+                settings, sources, cfg.secrets, dry_run=False, use_lock=True, incremental=True
+            )
         )
     except RunLockedError:
         return "A scheduled or manual run is already in progress. Try again shortly."

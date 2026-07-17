@@ -42,14 +42,20 @@ export function useSearch() {
     },
   });
 
-  // When the background run finishes, refresh the job list exactly once.
+  // The backend stores jobs incrementally, so refresh the list on every poll
+  // while the run is in flight — the board fills as jobs are classified — and
+  // once more when it settles.
   useEffect(() => {
     const status = task.data?.status;
+    if (status === "running") {
+      invalidate();
+      return;
+    }
     if ((status === "done" || status === "error") && !settledRef.current) {
       settledRef.current = true;
       if (status === "done") invalidate();
     }
-  }, [task.data?.status, invalidate]);
+  }, [task.dataUpdatedAt, task.data?.status, invalidate]);
 
   const isRunning = run.isPending || task.data?.status === "running";
 

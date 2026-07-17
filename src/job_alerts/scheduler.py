@@ -87,6 +87,7 @@ async def run_once(
     *,
     dry_run: bool = False,
     use_lock: bool = True,
+    incremental: bool = False,
     profile: ProfileSettings | None = None,
 ) -> RunSummary:
     """One pipeline run, guarded by the lock. Returns the run summary.
@@ -94,12 +95,15 @@ async def run_once(
     The summary is also printed for the CLI; callers that only want the side
     effects (cmd_search, the scheduler tick) simply ignore the return value,
     while the dashboard uses it to report real counts.
+
+    `incremental` stores each job as its verdict lands (for the dashboard's live
+    board); the headless CLI/scheduler leave it off and store once at the end.
     """
     profile = profile if profile is not None else load_profile(secrets=secrets)
     lock_ctx = run_lock(settings.scheduler.lock_file) if use_lock else _null_context()
     with lock_ctx, Database(settings.database.path) as db:
         pipeline = Pipeline(settings, sources_config, secrets, db, profile)
-        summary = await pipeline.run(dry_run=dry_run)
+        summary = await pipeline.run(dry_run=dry_run, incremental=incremental)
         print(summary.render())
         return summary
 

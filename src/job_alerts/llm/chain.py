@@ -20,6 +20,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 
 from ..config import LlmSettings, Secrets
 from ..models import Job
@@ -95,11 +96,21 @@ class LlmAssessor:
             except Exception:
                 logger.debug("error closing provider %s", provider.name, exc_info=True)
 
-    async def assess_all(self, jobs: list[Job]) -> dict[str, JobAssessment]:
+    async def assess_all(
+        self,
+        jobs: list[Job],
+        on_batch: Callable[[list[Job], list[JobAssessment]], Awaitable[None]] | None = None,
+    ) -> dict[str, JobAssessment]:
         """Assess every job. Returns what succeeded, keyed by job id.
 
         Jobs missing from the result are the caller's problem to score — that is
         the documented contract, not an error.
+
+        `on_batch(batch_jobs, batch_assessments)` — when given, it is awaited after
+        each batch completes, so the caller can score, store and display those jobs
+        while later batches are still running (incremental population). Batches are
+        then processed sequentially so the callbacks fire in order and never race
+        each other's database writes.
         """
         if not self.providers or not jobs:
             return {}
@@ -115,18 +126,28 @@ class LlmAssessor:
             " -> ".join(p.name for p in self.providers),
         )
 
+        semaphore = asyncio.Semaphore(self.settings.max_concurrency)
+
+        if on_batch is not None:
+            assessments: dict[str, JobAssessment] = {}
+            for batch in batches:
+                async with semaphore:
+                    batch_result = await self._assess_batch(batch)
+                for assessment in batch_result:
+                    assessments[assessment.job_id] = assessment
+                await on_batch(batch, batch_result)
+            return assessments
+
         # Bounded concurrency: free tiers are rate-limited per minute, and
         # firing 15 batches at once is the fastest way to get 429'd off both
         # providers at the same moment.
-        semaphore = asyncio.Semaphore(self.settings.max_concurrency)
-
         async def run(batch: list[Job]) -> list[JobAssessment]:
             async with semaphore:
                 return await self._assess_batch(batch)
 
         results = await asyncio.gather(*(run(b) for b in batches), return_exceptions=True)
 
-        assessments: dict[str, JobAssessment] = {}
+        assessments = {}
         for result in results:
             if isinstance(result, BaseException):
                 # _assess_batch already swallows LlmError; this is a genuine bug

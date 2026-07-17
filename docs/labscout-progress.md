@@ -13,15 +13,19 @@ Tick items as they land. Last updated: 2026-07-17.
 - [x] Richer Discord embeds + card chip + detail-panel taxonomy rows
 - [x] 608 tests green, ruff clean, frontend builds, committed + PR opened
 
-## 🔧 In progress — LLM performance / reliability (BLOCKER for live runs)
-- [ ] **Fix empty LLM responses** — model (`qwen3.5-8k`) returns 200 but empty content on the
-      assessment prompt (works on trivial prompts). Suspects: prompt too long, needs `max_tokens`
-      / `num_predict`, thinking-model output routing, or batch too large. Diagnose + fix.
-- [ ] **Speed up** — batches take 3–5 min each; `min_request_interval: 6` is pointless for a
-      self-hosted model (tuned for free cloud tiers) → set ~0–1. Consider batch size, shorter
-      `max_description_chars`, smaller/faster model.
-- [ ] **Incremental board population** — store + display jobs as each batch is classified instead
-      of all-at-once (backend: per-batch store; frontend: poll `/api/jobs` during a run). UX ask.
+## ✅ LLM performance / reliability (DONE)
+- [x] **Fixed empty LLM responses** — root cause: `qwen3.5` is a REASONING model; on Ollama's
+      OpenAI `/v1` it spends the whole budget in a hidden `reasoning` field and returns empty
+      `content`. Fix: `disable_thinking` → Ollama native `/api/chat` with `think:false` (~2s JSON).
+- [x] **Sped up** — `min_request_interval: 6 → 0` (self-hosted has no rate limit); `max_output_tokens`.
+- [x] **Incremental board population** — backend stores each job as its verdict lands
+      (`Pipeline.run(incremental=True)` via a per-batch `on_batch` callback + `known_before`
+      snapshot so early stores don't break the notify set); frontend refreshes `/api/jobs` on every
+      poll while a run is in flight. Dashboard search uses it.
+
+## ⏳ Still worth doing on LLM infra
+- [ ] Raw model speed is still ~8s/job on the free Colab GPU (a full run ≈ 13 min). Options: a
+      smaller/faster model, or fewer jobs per run. Not a code issue.
 
 ## ⏭️ Next up (from the plan roadmap)
 ### Phase 2 — broader coverage

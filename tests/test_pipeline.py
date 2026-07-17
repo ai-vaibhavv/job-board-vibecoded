@@ -67,6 +67,50 @@ class TestPipelineEndToEnd:
         assert "DRY RUN" in rendered
 
 
+class TestIncrementalStorage:
+    """`incremental=True` stores each job as its verdict lands (for the live
+    dashboard board) but must reach the exact same final state — same stored set,
+    same notifications, same counts — as the store-once-at-the-end run."""
+
+    async def test_incremental_run_matches_a_normal_run(
+        self, settings, sources_config, discord_secrets, db, tmp_path
+    ):
+        from job_alerts.database import Database
+
+        with respx.mock:
+            respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
+            normal = await Pipeline(settings, sources_config, discord_secrets, db).run()
+
+        with Database(tmp_path / "inc.db") as db2, respx.mock:
+            respx.post(WEBHOOK).mock(return_value=httpx.Response(204))
+            inc = await Pipeline(settings, sources_config, discord_secrets, db2).run(
+                incremental=True
+            )
+
+            # Same headline counts.
+            assert inc.newly_stored == normal.newly_stored
+            assert inc.notified == normal.notified
+            assert inc.above_threshold == normal.above_threshold
+            # Same jobs end up stored, with the same statuses.
+            def by_id(database):
+                return {j.id: j.status for j in database.list_jobs(limit=100)}
+
+            assert by_id(db2) == by_id(db)
+            # And the notified set is identical (early stores didn't suppress alerts).
+            n_norm = {j.id for j in db.list_jobs(status=JobStatus.NOTIFIED, limit=100)}
+            n_inc = {j.id for j in db2.list_jobs(status=JobStatus.NOTIFIED, limit=100)}
+            assert n_inc == n_norm and n_inc
+
+    async def test_incremental_dry_run_stores_nothing(
+        self, settings, sources_config, discord_secrets, db
+    ):
+        summary = await Pipeline(settings, sources_config, discord_secrets, db).run(
+            dry_run=True, incremental=True
+        )
+        assert summary.newly_stored == 0
+        assert db.list_jobs(limit=50) == []
+
+
 class TestNotificationHonesty:
     """The spec's most important safety property: never claim a delivery that
     did not happen, and never lose a job because of a failed delivery."""
