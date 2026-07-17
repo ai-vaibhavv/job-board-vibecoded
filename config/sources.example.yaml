@@ -355,6 +355,27 @@ sources:
       - uni-tuebingen.de
       - dfki.de
       - cyber-valley.de
+      # More AI/ML/robotics-strong German universities and institutes. A domain
+      # here only ADMITS results from it — pair it with a `site:` query below (or
+      # a broad keyword query) to actually surface its postings.
+      - uni-freiburg.de
+      - uni-stuttgart.de
+      - uni-bonn.de
+      - uni-saarland.de
+      - cispa.de
+      - hpi.de
+      - fu-berlin.de
+      - hu-berlin.de
+      - tu-dresden.de
+      - lmu.de
+      - uni-mannheim.de
+      - uni-heidelberg.de
+      - uni-potsdam.de
+      - dlr.de
+      - fz-juelich.de
+      - helmholtz.de
+      - helmholtz-munich.de
+      - ellis.eu
     # Advisory hint to the ranker, never a filter.
     search_country: germany
     # On the right host, but not job postings.

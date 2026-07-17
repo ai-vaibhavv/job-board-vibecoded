@@ -205,7 +205,12 @@ class NotificationSettings(BaseModel):
 
 class HttpSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    user_agent: str = "GermanyResearchJobAlerts/1.0 (personal job-search tool)"
+    user_agent: str = "LabScout/1.0 (academic-opportunity discovery; personal tool)"
+    accept_language: str = "de-DE,de;q=0.9,en;q=0.8"
+    """Sent on every request. Germany-first by default; set to e.g.
+    "en-GB,en;q=0.9" or "fr-FR,fr;q=0.9,en;q=0.8" when crawling other countries so
+    servers return the expected language. Config-driven so widening beyond Germany
+    is a settings edit, not a code change."""
     request_timeout: float = 20.0
     total_run_timeout: float = 600.0
     max_concurrency: int = 5

@@ -25,6 +25,14 @@ class TestLooksAcademic:
     def test_german_academic_terms(self):
         assert looks_academic("Studentische Hilfskraft am Lehrstuhl für Informatik")
         assert looks_academic(None, "Doktorand gesucht, Universität Tübingen")
+        assert looks_academic("Promotionsstelle am Forschungszentrum Jülich")
+
+    def test_accented_european_terms(self):
+        # Accent-folded, so French/Italian/Spanish postings match too.
+        assert looks_academic("Doctorant en apprentissage automatique, Université de Paris")
+        assert looks_academic("Dottorando presso l'università di Bologna")
+        assert looks_academic("Becario de investigación en la universidad")
+        assert looks_academic("Promovendus aan de Universiteit van Amsterdam")
 
     def test_non_academic_text_is_false(self):
         assert not looks_academic("Senior Sales Manager at a fintech startup")

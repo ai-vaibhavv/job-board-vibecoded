@@ -12,6 +12,7 @@ Two rules drive the design:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -31,24 +32,45 @@ _PHD_NEGATIVES = frozenset(
 _TITLE_ONLY_NEGATIVES = frozenset({"senior", "principal", "director", "head of", "lead"})
 
 
+def _fold_accents(text: str) -> str:
+    """Strip Latin accents so "université"/"università"/"investigación" match
+    their plain-ASCII academic terms. `normalize_text_key` only folds German
+    umlauts, so European accents need this extra pass — but only here, for the
+    fuzzy academic-vocabulary signal, never on the dedup/identity path."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 # A light, multilingual academic-vocabulary signal. The authoritative in-scope
 # decision is the LLM's `is_academic_opportunity` (LabScout is LLM-first), but a
 # deterministic signal is useful for ranking, logging, and any future
-# LLM-unavailable path. Folded through `normalize_text_key`, so umlauts and
-# punctuation do not matter; compared as substrings on the folded haystack.
+# LLM-unavailable path. Terms are accent-folded so a European posting matches;
+# compared as substrings on the folded haystack.
 ACADEMIC_TERMS = frozenset(
-    normalize_text_key(t)
+    _fold_accents(normalize_text_key(t))
     for t in (
         # English
         "university", "faculty", "department", "institute", "laboratory", "research group",
         "research assistant", "student assistant", "teaching assistant", "research fellow",
         "research internship", "phd position", "doctoral", "postdoc", "thesis", "professor",
         "chair of", "graduate school", "research project", "principal investigator",
+        "research centre", "research center", "graduate research", "undergraduate research",
+        "postgraduate", "scholarship", "fellowship", "dissertation",
         # German
         "universitat", "hochschule", "fakultat", "fachbereich", "institut", "labor",
         "lehrstuhl", "arbeitsgruppe", "hilfskraft", "hiwi", "werkstudent", "forschung",
         "forschungspraktikum", "wissenschaftliche", "studentische", "doktorand",
-        "promotion", "abschlussarbeit", "bachelorarbeit", "masterarbeit", "tutor",
+        "promotion", "promotionsstelle", "abschlussarbeit", "bachelorarbeit", "masterarbeit",
+        "tutor", "wissenschaftlicher mitarbeiter", "graduiertenkolleg", "habilitation",
+        "forschungszentrum", "lehrbeauftragter", "exzellenzcluster",
+        # French
+        "universite", "laboratoire", "recherche", "doctorant", "these",
+        "assistant de recherche", "stage de recherche", "ecole doctorale", "maitre de conference",
+        # Dutch
+        "universiteit", "onderzoek", "promovendus", "hoogleraar", "faculteit",
+        "onderzoeksassistent", "vakgroep",
+        # Italian / Spanish
+        "universita", "ricerca", "dottorando", "borsa di studio",
+        "universidad", "investigacion", "doctorado", "becario de investigacion",
     )
 )
 
@@ -60,7 +82,7 @@ def looks_academic(*texts: str | None) -> bool:
     "university" and a real lab posting can omit every listed word. Used to
     enrich, not to decide.
     """
-    haystack = normalize_text_key(" ".join(t for t in texts if t))
+    haystack = _fold_accents(normalize_text_key(" ".join(t for t in texts if t)))
     return any(term in haystack for term in ACADEMIC_TERMS)
 
 

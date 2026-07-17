@@ -306,7 +306,10 @@ notifications:
 
 http:
   # Sent on every request so site owners can identify this tool.
-  user_agent: "GermanyResearchJobAlerts/1.0 (+https://github.com/yourname/germany-research-job-alerts; personal job-search tool)"
+  user_agent: "LabScout/1.0 (+https://github.com/yourname/labscout; personal academic-search tool)"
+  # Preferred content language, sent on every request. Germany-first by default;
+  # change when crawling other countries (e.g. "en-GB,en;q=0.9").
+  accept_language: "de-DE,de;q=0.9,en;q=0.8"
   # Seconds. Applied per request and to the whole run.
   request_timeout: 20.0
   total_run_timeout: 600.0

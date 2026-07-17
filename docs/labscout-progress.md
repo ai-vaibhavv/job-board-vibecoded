@@ -34,8 +34,20 @@ Tick items as they land. Last updated: 2026-07-17.
       MPG, Helmholtz, uni hospitals. Enhanced the `json_api` connector: `item_url_template`
       (build URLs from `refnr`), `headers` (public API key), and `{query}` multi-query fetch.
       Verified live via `check-source`. (EURAXESS stays a disabled reference — no clean JSON API.)
-- [ ] University-domain discovery expansion; department/lab/institute connectors
-- [ ] Source-health monitoring; de-Germanization (config-driven country/timezone/language)
+- [x] **University-domain discovery expansion** — added ~18 AI-strong German university/institute
+      domains (CISPA, HPI, Freiburg, Saarland, Stuttgart, Bonn, Dresden, DLR, Jülich, Berlin unis…)
+      + targeted `site:` queries to `search_discovery`.
+- [x] **Source-health monitoring** — migration v9 `source_health`, per-run streak tracking, "Sources
+      AILING" in the run summary, `source-health` CLI.
+- [x] **Multilingual terminology** — accent-folded `ACADEMIC_TERMS` with German + French/Dutch/
+      Italian/Spanish academic vocabulary (`looks_academic`).
+- [x] **De-Germanization (config-driven)** — `http.accept_language` is now a setting (Germany-first
+      default); LabScout user-agent. Deeper de-Germanization (country/timezone/`all_germany`,
+      `_GERMAN_CITIES`) remains for when the product goes pan-European.
+- [ ] Department/lab/institute HTML connectors (more sources) — ongoing; the json_api/html/rss
+      framework is ready, each new source is a config + fixture + `check-source`.
+
+**Phase 2 core complete.** Remaining is incremental source-adding, done as needed.
 
 ### Phase 3 — central academic profile (single-user, local-first)
 - [ ] Persistent résumé upload (PDF/DOCX/MD/LaTeX/ZIP), immutable originals

@@ -118,7 +118,7 @@ class PoliteClient:
                     "text/html,application/xhtml+xml,application/xml,"
                     "application/json;q=0.9,*/*;q=0.8"
                 ),
-                "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+                "Accept-Language": settings.accept_language,
             },
             timeout=httpx.Timeout(settings.request_timeout),
             follow_redirects=True,
