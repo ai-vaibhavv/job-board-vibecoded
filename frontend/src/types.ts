@@ -219,3 +219,27 @@ export interface ProfileResponse {
   source?: { filename: string; size_bytes: number; uploaded_at: string } | null;
   message?: string;
 }
+
+export type MatchCategory = "strong" | "good" | "stretch" | "unlikely";
+export interface MatchAnalysis {
+  job_id: string;
+  category: MatchCategory;
+  summary: string;
+  strong_matches: string[];
+  partial_matches: string[];
+  missing_requirements: string[];
+  relevant_projects: string[];
+  relevant_experience: string[];
+  relevant_skills: string[];
+  suggested_emphasis: string[];
+  concerns: string[];
+  level_compatible: boolean;
+  language_compatible: boolean;
+  confidence: string;
+}
+export interface MatchResponse {
+  available: boolean;
+  reason?: string;
+  cached?: boolean;
+  match?: MatchAnalysis;
+}

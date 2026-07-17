@@ -1002,6 +1002,73 @@ def get_original_upload() -> dict | None:
         return db.get_profile_upload(latest["id"])
 
 
+def _job_match_block(job: Job) -> str:
+    """Flatten a job for the match prompt — the taxonomy first, then the text."""
+    bits = [f"Title: {job.title}"]
+    if job.organization:
+        bits.append(f"Organization: {job.organization}")
+    if job.location or job.city:
+        bits.append(f"Location: {job.location or job.city}")
+    for label, value in (
+        ("Opportunity type", job.opportunity_type),
+        ("Applicant level", job.applicant_level),
+        ("Academic field", job.academic_field),
+    ):
+        if value:
+            bits.append(f"{label}: {value}")
+    if job.matched_keywords:
+        bits.append(f"Topics/skills: {', '.join(job.matched_keywords[:10])}")
+    if job.description:
+        bits.append(f"Description: {job.description[:2500]}")
+    return "\n".join(bits)
+
+
+def match_job(job_id: str) -> dict:
+    """Analyse how the stored profile fits one opportunity, cache-first.
+
+    Returns `{"available": bool, ...}`. `available` is False (with a `reason`)
+    when there is no profile yet, the job is unknown, or the LLM is down — the UI
+    shows the reason rather than a broken panel."""
+    import hashlib
+
+    from ..llm.assist import MATCH_PROMPT_VERSION, analyze_match
+    from ..profile import MatchAnalysis
+
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        prow = db.get_profile()
+        if prow is None:
+            return {"available": False, "reason": "no_profile"}
+        job = db.get(job_id)
+        if job is None:
+            return {"available": False, "reason": "unknown_job"}
+
+        profile_json = prow["profile_json"]
+        profile_hash = hashlib.sha256(profile_json.encode("utf-8")).hexdigest()
+        cached = db.get_match(job_id, job.content_hash, profile_hash, MATCH_PROMPT_VERSION)
+        if cached is not None:
+            return {"available": True, "cached": True, "match": cached}
+
+    result = asyncio.run(
+        analyze_match(profile_json, _job_match_block(job), cfg.settings.llm, cfg.secrets)
+    )
+    if result is None:
+        return {"available": False, "reason": "llm_unavailable"}
+    try:
+        match = MatchAnalysis.model_validate({**result, "job_id": job_id})
+    except Exception as exc:
+        logger.info("match validation failed: %s", exc)
+        return {"available": False, "reason": "unparseable"}
+
+    payload = match.model_dump(mode="json")
+    with Database(cfg.db_path) as db:
+        try:
+            db.save_match(job_id, job.content_hash, profile_hash, MATCH_PROMPT_VERSION, payload)
+        except Exception as exc:  # a cache write must not fail the request
+            logger.debug("could not cache match for %s: %s", job_id, exc)
+    return {"available": True, "cached": False, "match": payload}
+
+
 # ---------------------------------------------------------------------------
 # Search (fetch)
 # ---------------------------------------------------------------------------

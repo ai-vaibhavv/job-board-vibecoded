@@ -326,6 +326,48 @@ class TestSettings:
         assert client.get("/api/settings", auth=("admin", "secret")).status_code == 200
 
 
+class TestSlashJobIds:
+    """RSS/URL-derived ids contain slashes (`tum_hiwi:https://…/x`). uvicorn
+    decodes %2F, so the routes use `{job_id:path}` — detail and the sub-routes
+    must still resolve instead of falling through to the SPA/404."""
+
+    _SLASH_ID = "tum_hiwi:https://portal.mytum.de/schwarzesbrett/x_20260715"
+
+    @pytest.fixture
+    def slash_client(self, tmp_path, settings, discord_secrets, job_factory, monkeypatch):
+        settings.database.path = tmp_path / "jobs.db"
+        with Database(settings.database.path) as db:
+            db.upsert(job_factory(id=self._SLASH_ID, url="https://portal.mytum.de/x"))
+        svc._config = svc.AppConfig(
+            settings=settings, sources=SourcesConfig(sources=[]), secrets=discord_secrets
+        )
+        monkeypatch.setattr(svc, "llm_online", lambda: True)
+        with TestClient(create_app()) as c:
+            yield c
+        svc._config = None
+
+    def test_detail_resolves_for_a_slash_id(self, slash_client):
+        from urllib.parse import quote
+
+        r = slash_client.get(f"/api/jobs/{quote(self._SLASH_ID, safe='')}")
+        assert r.status_code == 200
+        assert r.json()["job"]["id"] == self._SLASH_ID
+
+    def test_hide_resolves_for_a_slash_id(self, slash_client):
+        from urllib.parse import quote
+
+        r = slash_client.post(f"/api/jobs/{quote(self._SLASH_ID, safe='')}/hide")
+        assert r.status_code == 200
+
+    def test_match_resolves_for_a_slash_id(self, slash_client):
+        from urllib.parse import quote
+
+        # No profile yet -> the route still resolves and answers, not a 404/SPA.
+        r = slash_client.get(f"/api/jobs/{quote(self._SLASH_ID, safe='')}/match")
+        assert r.status_code == 200
+        assert r.json()["available"] is False
+
+
 class TestSpaFallback:
     """A deep link like /profile is a client-side route, not a file — the static
     layer must serve index.html so React Router can take over on a hard load."""

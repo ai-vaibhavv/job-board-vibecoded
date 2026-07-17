@@ -297,3 +297,58 @@ async def extract_profile(resume_text: str, llm: LlmSettings, secrets: Secrets) 
         logger.info("could not parse profile reply: %s", exc)
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+MATCH_PROMPT_VERSION = 1
+"""Bump when a change here would change a match verdict, so a cached match records
+which rubric produced it (Phase 4)."""
+
+_MATCH_SYSTEM = (
+    "You judge how well a student's academic profile fits a specific opportunity. "
+    "EVERY claim you make must cite evidence from the profile AND/OR the posting — "
+    "never invent a skill, a requirement or an experience that is not written down. "
+    "You do NOT output a numeric score; you choose one honest category and back it "
+    "with concrete, cited points. You reply with valid JSON only — no prose."
+)
+
+
+async def analyze_match(
+    profile_json: str, job_block: str, llm: LlmSettings, secrets: Secrets
+) -> dict | None:
+    """Analyse how a profile fits one opportunity. `profile_json` is the compact
+    profile; `job_block` is the posting flattened for the prompt. Best-effort:
+    None when the endpoint is down or the reply is unusable."""
+    user = (
+        "Compare this STUDENT PROFILE against this OPPORTUNITY and judge the fit.\n"
+        "Cite evidence from BOTH sides in every point (e.g. \"You built a SLAM system "
+        "in ROS — the role asks for robotics software\"). Do not invent anything: if "
+        "the profile lacks something the posting requires, list it under "
+        "missing_requirements honestly. If the posting is thin, say so and lower "
+        "confidence.\n\n"
+        "category — pick ONE:\n"
+        "  strong   : clearly qualified; most requirements evidenced.\n"
+        "  good     : a solid fit with a few gaps.\n"
+        "  stretch  : plausible but several requirements are missing.\n"
+        "  unlikely : wrong level/field, or key requirements absent.\n\n"
+        "Return JSON with exactly this shape and nothing else:\n"
+        "{\n"
+        '  "category": "strong|good|stretch|unlikely",\n'
+        '  "summary": "one honest sentence",\n'
+        '  "strong_matches": [], "partial_matches": [], "missing_requirements": [],\n'
+        '  "relevant_projects": [], "relevant_experience": [], "relevant_skills": [],\n'
+        '  "suggested_emphasis": [], "concerns": [],\n'
+        '  "level_compatible": true, "language_compatible": true,\n'
+        '  "confidence": "low|medium|high"\n'
+        "}\n\n"
+        f"STUDENT PROFILE:\n{profile_json}\n\n"
+        f"OPPORTUNITY:\n{job_block}"
+    )
+    reply = await _chat(llm, secrets, _MATCH_SYSTEM, user, max_tokens=2000)
+    if reply is None:
+        return None
+    try:
+        parsed = _extract_json(reply)
+    except Exception as exc:
+        logger.info("could not parse match reply: %s", exc)
+        return None
+    return parsed if isinstance(parsed, dict) else None

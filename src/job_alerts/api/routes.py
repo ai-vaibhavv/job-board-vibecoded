@@ -73,23 +73,29 @@ def list_jobs(
     return {"jobs": jobs, "total": len(jobs)}
 
 
-@router.get("/jobs/{job_id}")
-def get_job(job_id: str) -> dict:
-    detail = svc.job_detail_json(job_id)
-    if not detail.get("exists"):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
-    return detail
+# Job ids are `source:source_job_id`, and an RSS/URL-derived id contains slashes
+# (e.g. `tum_hiwi:https://portal.mytum.de/...`). uvicorn decodes %2F back to "/",
+# so a single-segment `{job_id}` never matches those — the request falls through
+# to the SPA. The `:path` converter matches slashes; its regex backtracks to the
+# trailing literal suffix (`/publish`, `/match`), so the sub-routes below still
+# resolve. The greedy bare-detail route is therefore declared LAST, after every
+# more specific `/jobs/...` route, or it would swallow them.
 
 
 # --- mutations -----------------------------------------------------------
 
 
-@router.post("/jobs/{job_id}/publish", dependencies=[Depends(require_write_auth)])
+@router.post("/jobs/unhide-all", dependencies=[Depends(require_write_auth)])
+def unhide_all() -> dict:
+    return {"message": svc.unhide_all()}
+
+
+@router.post("/jobs/{job_id:path}/publish", dependencies=[Depends(require_write_auth)])
 def publish(job_id: str, body: PublishRequest) -> dict:
     return {"message": svc.publish_job(job_id, body.confirm)}
 
 
-@router.post("/jobs/{job_id}/refresh", dependencies=[Depends(require_write_auth)])
+@router.post("/jobs/{job_id:path}/refresh", dependencies=[Depends(require_write_auth)])
 def refresh(job_id: str) -> dict:
     # Fetch the real posting page: store the fuller description, act on the link
     # status (auto-hide a definitively dead one), (re)translate a German job.
@@ -99,14 +105,15 @@ def refresh(job_id: str) -> dict:
     return detail
 
 
-@router.post("/jobs/{job_id}/hide", dependencies=[Depends(require_write_auth)])
+@router.post("/jobs/{job_id:path}/hide", dependencies=[Depends(require_write_auth)])
 def hide(job_id: str) -> dict:
     return {"message": svc.hide_job(job_id)}
 
 
-@router.post("/jobs/unhide-all", dependencies=[Depends(require_write_auth)])
-def unhide_all() -> dict:
-    return {"message": svc.unhide_all()}
+@router.get("/jobs/{job_id:path}/match")
+def match(job_id: str) -> dict:
+    """How the stored profile fits this opportunity (cache-first, may call the LLM)."""
+    return svc.match_job(job_id)
 
 
 # --- search --------------------------------------------------------------
@@ -251,3 +258,16 @@ def check_links() -> dict:
             detail="A background job (search or link check) is already running.",
         ) from None
     return task.as_dict()
+
+
+# --- job detail (declared LAST) ------------------------------------------
+# The greedy `{job_id:path}` would otherwise swallow every other `/jobs/...`
+# route, so this catch-all must come after them all.
+
+
+@router.get("/jobs/{job_id:path}")
+def get_job(job_id: str) -> dict:
+    detail = svc.job_detail_json(job_id)
+    if not detail.get("exists"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    return detail

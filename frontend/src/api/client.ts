@@ -8,6 +8,7 @@ import type {
   JobDetail,
   JobFilters,
   JobsResponse,
+  MatchResponse,
   Meta,
   ProfileResponse,
   ResumeResult,
@@ -61,6 +62,8 @@ export const api = {
   },
 
   job: (id: string) => request<JobDetail>(`/jobs/${encodeURIComponent(id)}`),
+
+  match: (id: string) => request<MatchResponse>(`/jobs/${encodeURIComponent(id)}/match`),
 
   refresh: (id: string) =>
     request<JobDetail>(`/jobs/${encodeURIComponent(id)}/refresh`, { method: "POST" }),

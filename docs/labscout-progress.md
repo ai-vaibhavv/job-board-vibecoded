@@ -60,8 +60,15 @@ Tick items as they land. Last updated: 2026-07-17.
 - [x] Bonus: the `disable_thinking` fix now also applies to the dashboard translate/keyword LLM path.
 
 ### Phase 4 — matching & semantic search
-- [ ] Profile↔opportunity match analysis (evidence-cited categories, **no ATS score**)
-- [ ] Embeddings + hybrid search + filters + similar opportunities
+- [x] **Profile↔opportunity match analysis** — LLM-driven, evidence-cited categories
+      (strong/good/stretch/unlikely, **no ATS number**): strong/partial matches, missing
+      requirements, suggested emphasis, level/language compatibility, concerns, confidence.
+      `MatchAnalysis` model, migration v11 cache (keyed on job content + profile + prompt version),
+      `analyze_match` (disable_thinking), `GET /api/jobs/{id}/match`, and a "Your fit" section in
+      the job detail panel (on-demand). Fixed a latent bug: slash-containing job ids (all RSS jobs)
+      broke every `/api/jobs/{id}` route — now `{job_id:path}`.
+- [ ] Embeddings + hybrid search + filters + similar opportunities (needs an embedding model on the
+      endpoint — deferred).
 
 ### Phase 5 — résumé tailoring
 - [ ] Suggested edits + diff + accept/reject; sandboxed LaTeX compile; PDF preview

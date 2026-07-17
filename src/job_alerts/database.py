@@ -289,6 +289,23 @@ _MIGRATIONS: list[str] = [
         updated_at       TEXT NOT NULL
     );
     """,
+    # v11 — profile↔opportunity match analysis cache (Phase 4).
+    #
+    # A match depends on BOTH sides, so it is keyed on the job's content_hash AND
+    # a hash of the profile: edit the résumé and every match re-computes, edit the
+    # posting and just that one does. `prompt_version` invalidates on a rubric
+    # change, exactly like the assessment cache. A side table with ON DELETE
+    # CASCADE, so a deleted job takes its match with it.
+    """
+    CREATE TABLE IF NOT EXISTS job_match (
+        job_id         TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash   TEXT NOT NULL,
+        profile_hash   TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        match_json     TEXT NOT NULL,
+        analyzed_at    TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -1050,10 +1067,66 @@ class Database:
 
     def delete_profile(self) -> None:
         """Erase the profile and every stored upload — the user's 'delete my
-        data' button. Uploads go too: the résumé bytes are the sensitive part."""
+        data' button. Uploads go too: the résumé bytes are the sensitive part.
+        Matches are profile-dependent, so they go as well."""
         with self._tx() as conn:
             conn.execute("DELETE FROM profile WHERE id = 1")
             conn.execute("DELETE FROM profile_uploads")
+            conn.execute("DELETE FROM job_match")
+
+    # -- match analysis cache (Phase 4) -----------------------------------
+
+    def get_match(
+        self, job_id: str, content_hash: str, profile_hash: str, prompt_version: int
+    ) -> dict | None:
+        """A cached match verdict for this exact (posting, profile, rubric), else
+        None. Keyed on both hashes: editing the résumé or the posting invalidates."""
+        row = self._conn.execute(
+            """
+            SELECT match_json FROM job_match
+            WHERE job_id = ? AND content_hash = ? AND profile_hash = ? AND prompt_version = ?
+            """,
+            (job_id, content_hash, profile_hash, prompt_version),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["match_json"])
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            logger.warning("cached match for %s is not valid json; ignoring", job_id)
+            return None
+
+    def save_match(
+        self,
+        job_id: str,
+        content_hash: str,
+        profile_hash: str,
+        prompt_version: int,
+        match: dict,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_match
+                    (job_id, content_hash, profile_hash, prompt_version, match_json, analyzed_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hash   = excluded.content_hash,
+                    profile_hash   = excluded.profile_hash,
+                    prompt_version = excluded.prompt_version,
+                    match_json     = excluded.match_json,
+                    analyzed_at    = excluded.analyzed_at
+                """,
+                (
+                    job_id,
+                    content_hash,
+                    profile_hash,
+                    prompt_version,
+                    json.dumps(match),
+                    _dt(when or datetime.now(UTC)),
+                ),
+            )
 
     def purge_old_rejected(self, retention_days: int) -> int:
         """Drop stale rejected jobs. Returns rows removed."""

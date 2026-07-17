@@ -20,6 +20,8 @@ and "what the user corrected" are always both recoverable.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -155,3 +157,71 @@ class AcademicProfile(BaseModel):
                 self.skills.technical,
             ]
         )
+
+
+class MatchCategory(StrEnum):
+    """The verdict on how well a profile fits an opportunity. Deliberately NOT a
+    number: an "ATS score" invents false precision. A handful of honest buckets,
+    each backed by cited evidence, is more useful and more truthful."""
+
+    STRONG = "strong"
+    GOOD = "good"
+    STRETCH = "stretch"
+    UNLIKELY = "unlikely"
+
+    @classmethod
+    def coerce(cls, value: object) -> MatchCategory:
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            key = value.strip().lower()
+            for member in cls:
+                if member.value == key:
+                    return member
+        return cls.UNLIKELY
+
+
+class MatchAnalysis(BaseModel):
+    """How one profile fits one opportunity — every claim cited from the posting
+    and the profile, never invented. Produced by the LLM, cached per
+    (job content, profile, prompt version)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    job_id: str = ""
+    category: str = "unlikely"
+    """A `MatchCategory` value; coerced on read."""
+    summary: str = ""
+    """One honest sentence: the verdict and why."""
+    strong_matches: list[str] = Field(default_factory=list)
+    """Concrete overlaps, citing both sides: "You built a SLAM system in ROS — the
+    role wants robotics software experience"."""
+    partial_matches: list[str] = Field(default_factory=list)
+    missing_requirements: list[str] = Field(default_factory=list)
+    """Stated requirements the profile does not evidence — the honest gaps."""
+    relevant_projects: list[str] = Field(default_factory=list)
+    relevant_experience: list[str] = Field(default_factory=list)
+    relevant_skills: list[str] = Field(default_factory=list)
+    suggested_emphasis: list[str] = Field(default_factory=list)
+    """What to foreground when applying — not fabricated strengths, real ones."""
+    concerns: list[str] = Field(default_factory=list)
+    level_compatible: bool = True
+    """Is the applicant level (Bachelor/Master/PhD) a fit?"""
+    language_compatible: bool = True
+    confidence: str = "medium"
+    """low | medium | high — the model's own certainty given how much each side said."""
+
+    @field_validator(
+        "strong_matches",
+        "partial_matches",
+        "missing_requirements",
+        "relevant_projects",
+        "relevant_experience",
+        "relevant_skills",
+        "suggested_emphasis",
+        "concerns",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_lists(cls, value: object) -> object:
+        return _coerce_str_list(value)

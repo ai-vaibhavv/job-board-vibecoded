@@ -15,6 +15,7 @@ export const keys = {
   searchTask: (id: string) => ["search-task", id] as const,
   settings: ["settings"] as const,
   profile: ["profile"] as const,
+  match: (id: string) => ["match", id] as const,
 };
 
 export function useMeta() {
@@ -144,5 +145,17 @@ export function useDeleteProfile() {
   return useMutation({
     mutationFn: () => api.deleteProfile(),
     onSuccess: (data) => qc.setQueryData(keys.profile, data),
+  });
+}
+
+/** Profile↔opportunity match. On-demand (`enabled`) because a fresh analysis can
+ * call the slow self-hosted LLM; once fetched it is cached client- and server-side. */
+export function useMatch(id: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.match(id ?? ""),
+    queryFn: () => api.match(id as string),
+    enabled: !!id && enabled,
+    staleTime: 10 * 60_000,
+    retry: false,
   });
 }

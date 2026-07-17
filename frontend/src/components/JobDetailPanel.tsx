@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useHide, useJobDetail, usePublish } from "../hooks/queries";
+import { Link } from "react-router-dom";
+import { useHide, useJobDetail, useMatch, useProfile, usePublish } from "../hooks/queries";
 import { formatDate, prettyLabel } from "../lib/format";
 import { useToast } from "./Toast";
 import { Chip, Logo, ScoreBadge, Spinner } from "./ui";
-import type { JobDetail } from "../types";
+import type { JobDetail, MatchCategory } from "../types";
 
 function MetaRow({ label, value }: { label: string; value: string | null | undefined }) {
   if (!value) return null;
@@ -169,8 +170,95 @@ function DetailBody({ data, onClose }: { data: JobDetail; onClose?: () => void }
           </div>
         )}
 
+        <MatchSection jobId={job.id} />
+
         <Description data={data} />
       </div>
+    </div>
+  );
+}
+
+const MATCH_META: Record<MatchCategory, { label: string; classes: string }> = {
+  strong: { label: "Strong match", classes: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
+  good: { label: "Good match", classes: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
+  stretch: { label: "Stretch", classes: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+  unlikely: { label: "Unlikely", classes: "bg-rose-500/15 text-rose-600 dark:text-rose-400" },
+};
+
+function MatchList({ title, items, tone = "ink" }: { title: string; items: string[]; tone?: string }) {
+  if (!items?.length) return null;
+  const color = tone === "rose" ? "text-rose-500" : tone === "emerald" ? "text-emerald-600 dark:text-emerald-400" : "text-ink";
+  return (
+    <div className="space-y-1">
+      <h5 className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">{title}</h5>
+      <ul className="space-y-1 text-sm">
+        {items.map((t, i) => (
+          <li key={i} className={`flex gap-1.5 ${color}`}>
+            <span className="text-ink-subtle">·</span>
+            <span>{t}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function MatchSection({ jobId }: { jobId: string }) {
+  const profile = useProfile();
+  const [analyze, setAnalyze] = useState(false);
+  const { data, isFetching, isError } = useMatch(jobId, analyze);
+
+  // Reset the "analyze" trigger when switching jobs.
+  useEffect(() => setAnalyze(false), [jobId]);
+
+  const hasProfile = profile.data?.exists;
+
+  return (
+    <div className="rounded-xl border border-border bg-surface-sunken/40 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-ink">Your fit</h4>
+        {data?.available && data.match && (
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${MATCH_META[data.match.category].classes}`}>
+            {MATCH_META[data.match.category].label}
+          </span>
+        )}
+      </div>
+
+      {!hasProfile ? (
+        <p className="mt-2 text-sm text-ink-subtle">
+          <Link to="/profile" className="text-accent hover:underline">Upload your résumé</Link>{" "}
+          to see how you fit this opportunity.
+        </p>
+      ) : !analyze ? (
+        <button onClick={() => setAnalyze(true)}
+          className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink">
+          Analyze my fit
+        </button>
+      ) : isFetching ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-ink-subtle">
+          <Spinner /> Analyzing against your profile — the self-hosted model can take a moment…
+        </div>
+      ) : isError || !data?.available ? (
+        <p className="mt-2 text-sm text-ink-subtle">
+          {data?.reason === "llm_unavailable"
+            ? "The LLM is offline right now — try again shortly."
+            : "Could not analyze this one."}
+        </p>
+      ) : data.match ? (
+        <div className="mt-3 space-y-3">
+          {data.match.summary && <p className="text-sm text-ink">{data.match.summary}</p>}
+          <div className="flex flex-wrap gap-3 text-xs text-ink-subtle">
+            <span>Level {data.match.level_compatible ? "✓" : "✗"}</span>
+            <span>Language {data.match.language_compatible ? "✓" : "✗"}</span>
+            <span>Confidence: {data.match.confidence}</span>
+          </div>
+          <MatchList title="Strong matches" items={data.match.strong_matches} tone="emerald" />
+          <MatchList title="Partial matches" items={data.match.partial_matches} />
+          <MatchList title="Missing / gaps" items={data.match.missing_requirements} tone="rose" />
+          <MatchList title="Emphasize when applying" items={data.match.suggested_emphasis} />
+          <MatchList title="Concerns" items={data.match.concerns} tone="rose" />
+        </div>
+      ) : null}
     </div>
   );
 }
