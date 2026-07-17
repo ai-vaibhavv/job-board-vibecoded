@@ -343,7 +343,9 @@ async def analyze_match(
         f"STUDENT PROFILE:\n{profile_json}\n\n"
         f"OPPORTUNITY:\n{job_block}"
     )
-    reply = await _chat(llm, secrets, _MATCH_SYSTEM, user, max_tokens=2000)
+    # Kept modest: the output is a handful of short lists, and a smaller budget on
+    # a slow self-hosted model is the difference between usable and a timeout.
+    reply = await _chat(llm, secrets, _MATCH_SYSTEM, user, max_tokens=1000)
     if reply is None:
         return None
     try:

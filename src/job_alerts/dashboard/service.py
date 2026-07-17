@@ -1019,7 +1019,9 @@ def _job_match_block(job: Job) -> str:
     if job.matched_keywords:
         bits.append(f"Topics/skills: {', '.join(job.matched_keywords[:10])}")
     if job.description:
-        bits.append(f"Description: {job.description[:2500]}")
+        # Kept short on purpose: the self-hosted model is slow, and the match only
+        # needs the gist of the role, not the whole posting.
+        bits.append(f"Description: {job.description[:1200]}")
     return "\n".join(bits)
 
 
