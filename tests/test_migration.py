@@ -266,6 +266,70 @@ class TestV3CountryRetraction:
             assert db.list_jobs(limit=1)[0].country == "Germany"
 
 
+class TestV8Taxonomy:
+    """v8 adds the academic taxonomy columns and the Pass-2 detail cache.
+    Additive only — a v7 row survives and reads back with empty taxonomy."""
+
+    def test_v1_rows_survive_with_empty_taxonomy(self, tmp_path):
+        path = tmp_path / "jobs.db"
+        _make_v1_db(path, rows=3)
+        with Database(path) as db:
+            jobs = db.list_jobs(limit=100)
+            assert len(jobs) == 3
+            assert all(j.opportunity_type is None for j in jobs)
+            assert all(j.applicant_level is None for j in jobs)
+            assert all(j.academic_field is None for j in jobs)
+
+    def test_taxonomy_columns_round_trip(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(
+                job_factory(
+                    id="j1",
+                    opportunity_type="hiwi",
+                    applicant_level="master",
+                    academic_field="ml",
+                )
+            )
+            got = db.list_jobs(limit=1)[0]
+            assert (got.opportunity_type, got.applicant_level, got.academic_field) == (
+                "hiwi",
+                "master",
+                "ml",
+            )
+
+    def test_a_rediscovery_without_pass2_keeps_the_stored_taxonomy(self, tmp_path, job_factory):
+        """COALESCE guard: a later run whose detail call did not run (job carries
+        None) must not wipe a previously classified value."""
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1", opportunity_type="hiwi", academic_field="ml"))
+            # Same posting rediscovered, Pass 2 skipped this run -> all None.
+            db.upsert(job_factory(id="j1", opportunity_type=None, academic_field=None))
+            got = db.list_jobs(limit=1)[0]
+            assert got.opportunity_type == "hiwi"
+            assert got.academic_field == "ml"
+
+    def test_detail_cache_round_trips_and_invalidates(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            assert db.get_detail("j1", "h1", 1) is None
+            db.save_detail("j1", "h1", 1, {"opportunity_type": "hiwi"}, "colab")
+            assert db.get_detail("j1", "h1", 1) == {"opportunity_type": "hiwi"}
+            # Edited posting (new hash) or new prompt version -> cache miss.
+            assert db.get_detail("j1", "h2", 1) is None
+            assert db.get_detail("j1", "h1", 2) is None
+
+    def test_a_detail_cannot_outlive_its_job(self, tmp_path, job_factory):
+        with Database(tmp_path / "jobs.db") as db:
+            db.upsert(job_factory(id="j1"))
+            db.save_detail("j1", "h1", 1, {"opportunity_type": "hiwi"}, "colab")
+            with db._tx() as conn:
+                conn.execute("DELETE FROM jobs WHERE id = 'j1'")
+            orphans = db._conn.execute(
+                "SELECT count(*) FROM job_opportunity_details"
+            ).fetchone()[0]
+            assert orphans == 0
+
+
 @pytest.mark.parametrize("version", range(len(_MIGRATIONS)))
 def test_every_migration_is_applied_in_order(tmp_path, version):
     """Upgrading from any historical version lands on the current schema."""

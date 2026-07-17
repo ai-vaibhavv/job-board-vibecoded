@@ -30,7 +30,8 @@ from .enrich import Enricher
 from .filtering import filter_job, is_recent_enough, matches_location
 from .http import PoliteClient
 from .llm import JobAssessment, LlmAssessor, build_providers
-from .llm.prompt import PROMPT_VERSION
+from .llm.base import OpportunityDetail
+from .llm.prompt import DETAIL_PROMPT_VERSION, PROMPT_VERSION
 from .models import Job, JobStatus, RunSummary, SourceResult
 from .normalization import normalize_candidate
 from .notifications.discord import DiscordNotifier, render_dry_run
@@ -38,6 +39,7 @@ from .scoring import Scorer
 from .sources import build_sources
 from .sources.linkedin_posts import PostsUnavailable
 from .sources.search_api import SearchUnavailable
+from .taxonomy import AcademicField, ApplicantLevel, OpportunityType
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,8 @@ class Pipeline:
         self._llm_provider_used: dict[str, str] = {}
         # Verdicts waiting for their jobs to exist. See `_flush_assessments`.
         self._pending_assessments: list[tuple[str, str, dict, str | None]] = []
+        # Pass-2 detail verdicts waiting for their jobs. See `_flush_details`.
+        self._pending_details: list[tuple[str, str, dict, str | None]] = []
         self.scorer = Scorer(
             settings.scoring,
             topics=settings.keywords.topics,
@@ -113,6 +117,7 @@ class Pipeline:
 
         to_notify = self._store(jobs, relevant, summary, dry_run=dry_run)
         self._flush_assessments(dry_run=dry_run)
+        self._flush_details(dry_run=dry_run)
         await self._notify(to_notify, summary, dry_run=dry_run)
 
         if not dry_run and self.settings.database.rejected_retention_days > 0:
@@ -269,6 +274,8 @@ class Pipeline:
 
         assessments = await self._assess_with_llm(recent, summary, dry_run=dry_run)
         relevant = self._apply_scores(recent, assessments, summary)
+        # Pass 2: fine taxonomy, survivors only — pure enrichment, never a gate.
+        await self._classify_details(relevant, summary, dry_run=dry_run)
         relevant.sort(key=lambda j: j.relevance_score, reverse=True)
         return relevant
 
@@ -379,6 +386,7 @@ class Pipeline:
             topics=self.settings.keywords.topics,
             locations=self.settings.locations.include,
             all_germany=self.settings.locations.all_germany,
+            core_ai_mode=self.settings.filtering.reject_non_core_ai,
         )
         try:
             fresh = await assessor.assess_all(pending)
@@ -438,6 +446,107 @@ class Pipeline:
         logger.info("cached %d/%d assessment(s)", saved, len(self._pending_assessments))
         self._pending_assessments.clear()
 
+    async def _classify_details(
+        self, jobs: list[Job], summary: RunSummary, *, dry_run: bool = False
+    ) -> None:
+        """Pass 2: fill the fine academic taxonomy on jobs that passed Pass 1.
+
+        Best-effort and non-blocking: the LLM being off, unconfigured, or failing
+        just leaves the taxonomy fields at None. Cache-first, exactly like Pass 1,
+        so a run pays for the detail call only on jobs it has never classified.
+        """
+        llm = self.settings.llm
+        if not jobs or not llm.enabled or not self._llm_configured:
+            return
+
+        cached: dict[str, OpportunityDetail] = {}
+        for job in jobs:
+            raw = self.db.get_detail(job.id, job.content_hash, DETAIL_PROMPT_VERSION)
+            if raw is None:
+                continue
+            try:
+                cached[job.id] = OpportunityDetail.model_validate(raw)
+            except Exception:  # pragma: no cover — a corrupt row must not stop a run
+                logger.debug("ignoring unreadable cached detail for %s", job.id)
+
+        pending = [j for j in jobs if j.id not in cached]
+        fresh: dict[str, OpportunityDetail] = {}
+        if pending:
+            providers = build_providers(self.secrets, llm)
+            if providers:
+                assessor = LlmAssessor(
+                    providers,
+                    llm,
+                    topics=self.settings.keywords.topics,
+                    locations=self.settings.locations.include,
+                    all_germany=self.settings.locations.all_germany,
+                    core_ai_mode=self.settings.filtering.reject_non_core_ai,
+                )
+                try:
+                    fresh = await assessor.detail_all(pending)
+                except Exception:
+                    logger.exception("llm detail pass failed entirely; leaving taxonomy empty")
+                    fresh = {}
+                finally:
+                    await assessor.aclose()
+                if not dry_run:
+                    provider_name = providers[0].name
+                    by_id = {j.id: j for j in pending}
+                    for job_id, detail in fresh.items():
+                        job = by_id.get(job_id)
+                        if job is None:  # pragma: no cover
+                            continue
+                        self._pending_details.append(
+                            (
+                                job.id,
+                                job.content_hash,
+                                detail.model_dump(mode="json"),
+                                provider_name,
+                            )
+                        )
+
+        details = {**cached, **fresh}
+        by_id = {j.id: j for j in jobs}
+        for job_id, detail in details.items():
+            job = by_id.get(job_id)
+            if job is not None:
+                self._apply_detail(job, detail)
+
+    def _apply_detail(self, job: Job, detail: OpportunityDetail) -> None:
+        """Copy a Pass-2 verdict onto a job, coercing onto the taxonomy enums.
+
+        Skills and research topics are folded into `matched_keywords` only when the
+        Pass-1 topics left it sparse, so the card and detail panel gain concrete
+        terms without overwriting a good topic reading.
+        """
+        job.opportunity_type = OpportunityType.coerce(detail.opportunity_type).value
+        job.applicant_level = ApplicantLevel.coerce(detail.applicant_level).value
+        job.academic_field = AcademicField.coerce(detail.academic_field).value
+        if len(job.matched_keywords) < 3:
+            extra = [*detail.research_topics, *detail.technical_skills]
+            seen = {k.casefold() for k in job.matched_keywords}
+            for term in extra:
+                if term and term.casefold() not in seen:
+                    job.matched_keywords.append(term)
+                    seen.add(term.casefold())
+            job.matched_keywords = job.matched_keywords[:8]
+
+    def _flush_details(self, *, dry_run: bool) -> None:
+        """Write queued Pass-2 verdicts, now that their jobs exist. Mirrors
+        `_flush_assessments`; a cache-write failure is never fatal."""
+        if dry_run or not self._pending_details:
+            self._pending_details.clear()
+            return
+        saved = 0
+        for job_id, content_hash, payload, provider in self._pending_details:
+            try:
+                self.db.save_detail(job_id, content_hash, DETAIL_PROMPT_VERSION, payload, provider)
+                saved += 1
+            except Exception as exc:
+                logger.debug("could not cache the detail for %s: %s", job_id, exc)
+        logger.debug("cached %d/%d detail(s)", saved, len(self._pending_details))
+        self._pending_details.clear()
+
     def _wrong_country(self, assessment: JobAssessment) -> str | None:
         """Is this job somewhere I cannot work? None means keep it.
 
@@ -489,6 +598,7 @@ class Pipeline:
                 # Hard rejects override the score: a model that says "requires a
                 # completed PhD" and then scores it 70 has contradicted itself,
                 # and the structured field is the more reliable signal.
+                flt = self.settings.filtering
                 hard_reject = None
                 if not assessment.is_job_posting:
                     hard_reject = "not an individual job posting"
@@ -497,6 +607,11 @@ class Pipeline:
                     # X as a Working Student in AI" matches every keyword and is
                     # somebody celebrating.
                     hard_reject = "about a job rather than offering one"
+                elif flt.require_academic and not assessment.is_academic_opportunity:
+                    # LabScout's defining gate: no university / lab / institute /
+                    # research affiliation. On even in broad mode — this is never a
+                    # generic job board — but degrades open when there is no verdict.
+                    hard_reject = "not an academic/research opportunity"
                 elif assessment.requires_completed_phd:
                     hard_reject = "requires a completed PhD"
                 elif self.profile.exclude_german_required and assessment.german_required:
@@ -505,17 +620,23 @@ class Pipeline:
                     hard_reject = "requires fluent German"
                 elif (reject := self._wrong_country(assessment)) is not None:
                     hard_reject = reject
-                elif not assessment.suitable_for_masters:
+                elif flt.require_masters_suitable and not assessment.suitable_for_masters:
+                    # core_ai preset only. Broad LabScout welcomes all applicant
+                    # levels, so a role unsuitable for a Master's is still kept.
                     hard_reject = "not suitable for a Master's student"
-                elif assessment.role_type == "master_thesis":
-                    # The student does not want thesis-only postings. role_type is
-                    # the model's own structured label; trust it over the score.
+                elif flt.reject_master_thesis and assessment.role_type == "master_thesis":
+                    # core_ai preset only. Broad LabScout treats thesis projects as
+                    # in scope; the narrow AI/Master's view does not want them.
                     hard_reject = "Master's thesis role, not wanted"
-                elif not assessment.core_ai_focus:
-                    # A role whose real field is another discipline that merely
-                    # applies ML. Wanted: core AI/ML/DL/CV/NLP work.
+                elif flt.reject_non_core_ai and not assessment.core_ai_focus:
+                    # core_ai preset only. A role whose real field is another
+                    # discipline that merely applies ML.
                     hard_reject = "not a core AI/ML role (domain merely applies ML)"
-                elif not assessment.topics and job.relevance_score > _NO_TOPIC_SCORE_CAP:
+                elif (
+                    flt.reject_non_core_ai
+                    and not assessment.topics
+                    and job.relevance_score > _NO_TOPIC_SCORE_CAP
+                ):
                     # Anti-inflation, using the model's own structured claim
                     # against its own number. Observed live: "HiWi role in
                     # unknown field" scored 55 — exactly the notify threshold —

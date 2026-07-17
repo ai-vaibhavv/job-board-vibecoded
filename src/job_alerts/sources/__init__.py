@@ -10,6 +10,7 @@ from .base import BaseSource, JobSource
 from .generic_html import GenericHtmlSource, SelectorError
 from .linkedin_posts import LinkedInPostsSource, PostsUnavailable
 from .mock import MockSource
+from .research_sources import JsonApiSource
 from .rss import RssSource
 from .search_api import SearchApiSource, SearchUnavailable
 
@@ -19,6 +20,7 @@ __all__ = [
     "BaseSource",
     "GenericHtmlSource",
     "JobSource",
+    "JsonApiSource",
     "LinkedInPostsSource",
     "MockSource",
     "PostsUnavailable",
@@ -44,6 +46,8 @@ def build_source(config: SourceConfig, client: PoliteClient, secrets: Secrets) -
             return SearchApiSource(config, client, secrets)
         case "linkedin_posts":
             return LinkedInPostsSource(config, client, secrets)
+        case "json_api":
+            return JsonApiSource(config, client)
         case _:  # pragma: no cover — pydantic constrains `type` already
             raise ValueError(f"unknown source type {config.type!r} for source {config.name!r}")
 

@@ -23,7 +23,7 @@ from collections import defaultdict
 
 from ..config import LlmSettings, Secrets
 from ..models import Job
-from .base import JobAssessment, LlmError, LlmProvider
+from .base import JobAssessment, LlmError, LlmProvider, OpportunityDetail
 from .providers import ColabProvider
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ class LlmAssessor:
         topics: list[str],
         locations: list[str],
         all_germany: bool,
+        core_ai_mode: bool = False,
     ) -> None:
         self.providers = providers
         self.settings = settings
@@ -72,6 +73,7 @@ class LlmAssessor:
             "topics": topics,
             "locations": locations,
             "all_germany": all_germany,
+            "core_ai_mode": core_ai_mode,
             "max_description_chars": settings.max_description_chars,
         }
         self._last_call: dict[str, float] = {}
@@ -132,6 +134,56 @@ class LlmAssessor:
             for assessment in result:
                 assessments[assessment.job_id] = assessment
         return assessments
+
+    async def detail_all(self, jobs: list[Job]) -> dict[str, OpportunityDetail]:
+        """Pass 2: fine-classify jobs that already passed Pass 1.
+
+        Best-effort by contract — a job missing from the result simply keeps its
+        default taxonomy values, exactly like a job missing from `assess_all`
+        keeps the keyword score. No retry storm: Pass 2 is enrichment, not the
+        gate, so a batch that fails once is dropped rather than re-attempted.
+        """
+        if not self.providers or not jobs:
+            return {}
+
+        batches = [
+            jobs[i : i + self.settings.batch_size]
+            for i in range(0, len(jobs), self.settings.batch_size)
+        ]
+        semaphore = asyncio.Semaphore(self.settings.max_concurrency)
+
+        async def run(batch: list[Job]) -> list[OpportunityDetail]:
+            async with semaphore:
+                return await self._detail_batch(batch)
+
+        results = await asyncio.gather(*(run(b) for b in batches), return_exceptions=True)
+        details: dict[str, OpportunityDetail] = {}
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("llm detail batch raised unexpectedly: %r", result)
+                continue
+            for detail in result:
+                details[detail.job_id] = detail
+        return details
+
+    async def _detail_batch(self, batch: list[Job]) -> list[OpportunityDetail]:
+        for provider in self.providers:
+            try:
+                await self._pace(provider.name)
+                return await provider.classify_details(batch, **self.prompt_kwargs)
+            except LlmError as exc:
+                logger.warning(
+                    "llm detail pass failed on a batch of %d (%s); leaving defaults",
+                    len(batch),
+                    exc,
+                )
+                self._record_failure(f"{provider.name} (detail): {exc}")
+                continue
+            except Exception as exc:
+                logger.exception("llm provider %s raised during detail pass", provider.name)
+                self._record_failure(f"{provider.name} (detail): {type(exc).__name__}: {exc}")
+                continue
+        return []
 
     async def _pace(self, provider_name: str) -> None:
         """Space out requests to one provider.

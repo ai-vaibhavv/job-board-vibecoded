@@ -1,5 +1,5 @@
 import type { JobSummary } from "../types";
-import { relativeTime, STATUS_META } from "../lib/format";
+import { prettyLabel, relativeTime, STATUS_META } from "../lib/format";
 import { Chip, Logo, ScoreBadge } from "./ui";
 
 export function JobCard({
@@ -44,6 +44,11 @@ export function JobCard({
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${status.classes}`}>
               {status.label}
             </span>
+            {job.opportunity_type && (
+              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
+                {prettyLabel(job.opportunity_type)}
+              </span>
+            )}
             {job.hidden && (
               <span className="rounded-full bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-subtle">
                 Hidden

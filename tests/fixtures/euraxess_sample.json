@@ -1,0 +1,37 @@
+{
+  "meta": { "total": 3, "country": "Germany" },
+  "data": {
+    "results": [
+      {
+        "id": "job-100234",
+        "title": "Student Assistant (HiWi) — Machine Learning for Medical Imaging",
+        "organisation": { "name": "University of Tübingen", "type": "university" },
+        "location": { "city": "Tübingen", "country": "Germany" },
+        "posted_at": "2026-07-10",
+        "deadline": "2026-08-15",
+        "employment_type": "part-time",
+        "links": { "self": "https://euraxess.example/jobs/100234" },
+        "summary": "A studentische Hilfskraft role supporting a computer-vision research group.",
+        "contact": { "email": "ml-lab@uni-tuebingen.example" }
+      },
+      {
+        "id": "job-100235",
+        "title": "PhD Position in Robotics",
+        "organisation": { "name": "Max Planck Institute for Intelligent Systems" },
+        "location": { "city": "Stuttgart", "country": "Germany" },
+        "posted_at": "2026-07-09",
+        "deadline": null,
+        "employment_type": "full-time",
+        "links": { "self": "https://euraxess.example/jobs/100235" },
+        "summary": "Funded doctoral researcher position in manipulation and control.",
+        "categories": [ { "name": "Robotics" }, { "name": "Engineering" } ]
+      },
+      {
+        "id": "job-100236",
+        "title": "",
+        "organisation": { "name": "Broken Row" },
+        "links": { "self": "https://euraxess.example/jobs/100236" }
+      }
+    ]
+  }
+}

@@ -16,6 +16,7 @@ from job_alerts.notifications.discord import (
     MAX_EMBEDS_PER_MESSAGE,
     DiscordNotifier,
     _embed_length,
+    _pretty_label,
     build_embed,
     build_messages,
     org_image_url,
@@ -31,6 +32,28 @@ from .conftest import make_job
 @pytest.fixture
 def notify_settings() -> NotificationSettings:
     return NotificationSettings(max_per_run=10, embeds_per_message=5, description_excerpt_chars=400)
+
+
+class TestAcademicTaxonomyFields:
+    def test_taxonomy_fields_are_shown_when_present(self, notify_settings):
+        job = make_job(opportunity_type="master_thesis", applicant_level="master", academic_field="ml")
+        embed = build_embed(job, notify_settings)
+        names = [f["name"] for f in embed["fields"]]
+        values = [f["value"] for f in embed["fields"]]
+        assert any("Opportunity" in n for n in names)
+        assert "Master Thesis" in values
+        assert "ML" in values
+
+    def test_absent_taxonomy_adds_no_fields(self, notify_settings):
+        job = make_job()  # opportunity_type/applicant_level/academic_field are None
+        embed = build_embed(job, notify_settings)
+        names = [f["name"] for f in embed["fields"]]
+        assert not any("Opportunity" in n for n in names)
+
+    def test_pretty_label_keeps_acronyms(self):
+        assert _pretty_label("ml") == "ML"
+        assert _pretty_label("phd_position") == "PhD Position"
+        assert _pretty_label("student_assistant") == "Student Assistant"
 
 
 class TestEmbedLimits:

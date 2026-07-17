@@ -31,6 +31,39 @@ _PHD_NEGATIVES = frozenset(
 _TITLE_ONLY_NEGATIVES = frozenset({"senior", "principal", "director", "head of", "lead"})
 
 
+# A light, multilingual academic-vocabulary signal. The authoritative in-scope
+# decision is the LLM's `is_academic_opportunity` (LabScout is LLM-first), but a
+# deterministic signal is useful for ranking, logging, and any future
+# LLM-unavailable path. Folded through `normalize_text_key`, so umlauts and
+# punctuation do not matter; compared as substrings on the folded haystack.
+ACADEMIC_TERMS = frozenset(
+    normalize_text_key(t)
+    for t in (
+        # English
+        "university", "faculty", "department", "institute", "laboratory", "research group",
+        "research assistant", "student assistant", "teaching assistant", "research fellow",
+        "research internship", "phd position", "doctoral", "postdoc", "thesis", "professor",
+        "chair of", "graduate school", "research project", "principal investigator",
+        # German
+        "universitat", "hochschule", "fakultat", "fachbereich", "institut", "labor",
+        "lehrstuhl", "arbeitsgruppe", "hilfskraft", "hiwi", "werkstudent", "forschung",
+        "forschungspraktikum", "wissenschaftliche", "studentische", "doktorand",
+        "promotion", "abschlussarbeit", "bachelorarbeit", "masterarbeit", "tutor",
+    )
+)
+
+
+def looks_academic(*texts: str | None) -> bool:
+    """True when any academic-vocabulary term appears in the given texts.
+
+    A best-effort heuristic, never a hard gate on its own — a company can say
+    "university" and a real lab posting can omit every listed word. Used to
+    enrich, not to decide.
+    """
+    haystack = normalize_text_key(" ".join(t for t in texts if t))
+    return any(term in haystack for term in ACADEMIC_TERMS)
+
+
 @dataclass(slots=True)
 class FilterDecision:
     """Why a job was kept or dropped. Surfaced by `list`/`export` and logged."""

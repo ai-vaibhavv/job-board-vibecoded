@@ -9,10 +9,10 @@
   --surface-raised: 255 255 255; /* cards, panels */
   --surface-sunken: 241 243 245; /* inputs, wells */
   --border: 226 229 233;
-  --ink: 23 27 33;
-  --ink-muted: 90 98 110;
-  --ink-subtle: 140 148 160;
-  --accent: 79 70 229; /* indigo-600 */
+  --ink: 5 29 67; /* Prussian Blue for headings/body */
+  --ink-muted: 43 76 104; /* Yale Blue */
+  --ink-subtle: 120 134 152;
+  --accent: 43 76 104; /* LabScout Yale Blue */
   --accent-ink: 255 255 255;
 }
 
@@ -21,11 +21,11 @@
   --surface-raised: 24 28 36;
   --surface-sunken: 30 35 44;
   --border: 42 48 58;
-  --ink: 233 236 240;
-  --ink-muted: 156 164 176;
-  --ink-subtle: 110 118 130;
-  --accent: 129 140 248; /* indigo-400 for contrast on dark */
-  --accent-ink: 17 20 26;
+  --ink: 233 238 242;
+  --ink-muted: 156 176 178; /* muted teal-grey */
+  --ink-subtle: 110 122 134;
+  --accent: 117 176 178; /* LabScout Tropical Teal for contrast on dark */
+  --accent-ink: 5 29 67; /* Prussian Blue text on teal */
 }
 
 html,

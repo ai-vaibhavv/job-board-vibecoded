@@ -1,7 +1,11 @@
-"""Germany Research Job Alerts.
+"""LabScout — academic-opportunity discovery.
 
-Finds Research Assistant / HiWi / Werkstudent / thesis positions across Germany
-and sends newly discovered ones to a Discord channel.
+Discovers university, lab and research-institute opportunities (HiWi, student /
+research / teaching assistant, thesis, PhD, research internships) — Germany-first —
+scores and dedupes them, and publishes the good ones to a Discord channel.
+
+The Python package keeps its historical name ``job_alerts`` for stability; the
+product is LabScout.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useHide, useJobDetail, usePublish } from "../hooks/queries";
-import { formatDate } from "../lib/format";
+import { formatDate, prettyLabel } from "../lib/format";
 import { useToast } from "./Toast";
 import { Chip, Logo, ScoreBadge, Spinner } from "./ui";
 import type { JobDetail } from "../types";
@@ -148,6 +148,9 @@ function DetailBody({ data, onClose }: { data: JobDetail; onClose?: () => void }
       {/* body */}
       <div className="space-y-5 p-5">
         <div className="space-y-1.5">
+          <MetaRow label="Opportunity" value={prettyLabel(job.opportunity_type)} />
+          <MetaRow label="Level" value={prettyLabel(job.applicant_level)} />
+          <MetaRow label="Field" value={prettyLabel(job.academic_field)} />
           <MetaRow label="Location" value={place} />
           <MetaRow label="Source" value={job.source} />
           <MetaRow label="Status" value={job.status} />

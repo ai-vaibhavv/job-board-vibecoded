@@ -207,11 +207,15 @@ class TestCountry:
 
 
 class TestCoreAiAndThesis:
-    """The Phase 6 sharpening: no Master's-thesis roles, and no domain jobs that
-    merely apply ML. Both are structured LLM fields the pipeline now gates on."""
+    """The narrow "core_ai" preset: no Master's-thesis roles, and no domain jobs
+    that merely apply ML. Both are opt-in flags (LabScout ships broad); this
+    class runs with the preset enabled, the way the maintainer's own instance does."""
 
     @pytest.fixture
     def pipe(self, settings, sources_config, secrets, tmp_path):
+        settings.filtering.reject_non_core_ai = True
+        settings.filtering.reject_master_thesis = True
+        settings.filtering.require_masters_suitable = True
         with Database(tmp_path / "t.db") as db:
             yield _pipeline(settings, sources_config, secrets, db)
 
@@ -273,3 +277,68 @@ class TestCoreAiAndThesis:
             [job], {"j1": self._assess(card_summary="A HiWi in ML at TU Munich.")}, summary_factory()
         )
         assert job.card_summary == "A HiWi in ML at TU Munich."
+
+
+class TestBroadDefaultAndAcademicGate:
+    """LabScout's shipped default: all fields and levels are in scope, so the
+    core_ai-only rejects do NOT fire — but a clearly non-academic role always does."""
+
+    @pytest.fixture
+    def pipe(self, settings, sources_config, secrets, tmp_path):
+        # Defaults: require_academic True, the three narrow flags False.
+        with Database(tmp_path / "t.db") as db:
+            yield _pipeline(settings, sources_config, secrets, db)
+
+    def _assess(self, **kw):
+        base = {
+            "job_id": "j1",
+            "is_job_posting": True,
+            "is_academic_opportunity": True,
+            "suitable_for_masters": True,
+            "topics": [],
+            "core_ai_focus": True,
+            "score": 85,
+        }
+        return JobAssessment(**{**base, **kw})
+
+    def test_master_thesis_is_kept_when_broad(self, pipe, job_factory, summary_factory):
+        job = job_factory(id="j1")
+        out = pipe._apply_scores(
+            [job], {"j1": self._assess(role_type="master_thesis")}, summary_factory()
+        )
+        assert out == [job]
+
+    def test_off_field_role_is_kept_when_broad(self, pipe, job_factory, summary_factory):
+        """A biology HiWi that merely applies ML — dropped under core_ai, kept here."""
+        job = job_factory(id="j1")
+        out = pipe._apply_scores(
+            [job], {"j1": self._assess(core_ai_focus=False, topics=[])}, summary_factory()
+        )
+        assert out == [job]
+
+    def test_non_master_role_is_kept_when_broad(self, pipe, job_factory, summary_factory):
+        """A Bachelor-only role is fine for the broad board."""
+        job = job_factory(id="j1")
+        out = pipe._apply_scores(
+            [job], {"j1": self._assess(suitable_for_masters=False)}, summary_factory()
+        )
+        assert out == [job]
+
+    def test_non_academic_role_is_always_dropped(self, pipe, job_factory, summary_factory):
+        """The one gate that stays on in broad mode: no academic affiliation."""
+        job = job_factory(id="j1")
+        out = pipe._apply_scores(
+            [job], {"j1": self._assess(is_academic_opportunity=False)}, summary_factory()
+        )
+        assert out == []
+        assert any("academic" in r for r in job.score_explanation)
+
+    def test_is_academic_defaults_true_so_old_verdicts_survive(
+        self, pipe, job_factory, summary_factory
+    ):
+        """A cached verdict from before the field existed omits it; the default
+        must not silently reject a legitimate academic role."""
+        assessment = JobAssessment(job_id="j1", is_job_posting=True, score=85)
+        assert assessment.is_academic_opportunity is True
+        job = job_factory(id="j1")
+        assert pipe._apply_scores([job], {"j1": assessment}, summary_factory()) == [job]

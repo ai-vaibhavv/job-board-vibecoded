@@ -136,6 +136,20 @@ class Job(BaseModel):
     `JobAssessment.card_summary`). None when there was no LLM verdict; the
     notifier then falls back to a trimmed posting excerpt."""
 
+    opportunity_type: str | None = None
+    """LabScout academic taxonomy — a `taxonomy.OpportunityType` value (hiwi,
+    master_thesis, phd_position, …). Filled by the Pass-2 LLM detail call; None
+    until a job has been fine-classified. Stored as a plain string, coerced onto
+    the enum where it is read/displayed."""
+
+    applicant_level: str | None = None
+    """A `taxonomy.ApplicantLevel` value (bachelor / master / phd_applicant / …).
+    Pass-2 output; None until classified."""
+
+    academic_field: str | None = None
+    """A `taxonomy.AcademicField` value (ml / robotics / physics / …). Pass-2
+    output; None until classified."""
+
     content_hash: str
     """Hash of the meaningful content. Changes when a posting is edited,
     which lets us tell a genuinely updated job from a duplicate."""

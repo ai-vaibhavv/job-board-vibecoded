@@ -130,6 +130,20 @@ def _color_for(score: int) -> int:
     return _COLOR_OK
 
 
+# Acronyms that should not be title-cased when a taxonomy value is displayed.
+_LABEL_ACRONYMS = {
+    "ml": "ML", "ai": "AI", "nlp": "NLP", "hiwi": "HiWi", "ee": "EE", "me": "ME",
+    "phd": "PhD",
+}
+
+
+def _pretty_label(value: str) -> str:
+    """Turn a taxonomy value ("master_thesis", "ml") into a display label
+    ("Master Thesis", "ML"). Purely cosmetic; the stored value is unchanged."""
+    words = value.replace("_", " ").split()
+    return " ".join(_LABEL_ACRONYMS.get(w, w.capitalize()) for w in words)
+
+
 def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
     """One job -> one Discord embed, guaranteed within limits."""
     title = truncate(sanitize(job.title) or "(untitled position)", MAX_EMBED_TITLE)
@@ -154,6 +168,13 @@ def build_embed(job: Job, settings: NotificationSettings) -> dict[str, Any]:
 
     # Organization is shown in the embed `author` block (with its logo) instead
     # of a field, so it is not repeated here.
+    # LabScout academic taxonomy first — it is the whole point of the board.
+    if job.opportunity_type:
+        add_field("🎓 Opportunity", _pretty_label(job.opportunity_type))
+    if job.applicant_level:
+        add_field("🧑‍🎓 Level", _pretty_label(job.applicant_level))
+    if job.academic_field:
+        add_field("🔬 Field", _pretty_label(job.academic_field))
     add_field("📍 Location", sanitize(job.location) or "—")
     add_field("⭐ Relevance", f"{job.relevance_score}/100")
     add_field("🔎 Source", sanitize(job.source))
@@ -312,7 +333,7 @@ class DiscordNotifier:
 
     async def send_test(self) -> bool:
         payload = {
-            "content": "✅ **Germany Research Job Alerts** — test message",
+            "content": "✅ **LabScout** — test message",
             "embeds": [
                 {
                     "title": "Webhook configured correctly",

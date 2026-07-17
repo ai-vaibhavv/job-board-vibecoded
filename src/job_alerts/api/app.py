@@ -35,9 +35,9 @@ def _cors_origins() -> list[str]:
 
 def create_app(*, static_dir: str | os.PathLike[str] | None = None) -> FastAPI:
     app = FastAPI(
-        title="Job Board API",
+        title="LabScout API",
         version="1.0.0",
-        summary="JSON API over the job-alerts pipeline for the React dashboard.",
+        summary="JSON API over the LabScout pipeline for the React dashboard.",
     )
 
     app.add_middleware(

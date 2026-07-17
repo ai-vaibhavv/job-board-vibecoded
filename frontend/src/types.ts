@@ -20,6 +20,9 @@ export interface JobSummary {
   relevance_score: number;
   score_color: string;
   matched_keywords: string[];
+  opportunity_type: string | null;
+  applicant_level: string | null;
+  academic_field: string | null;
   remote_status: RemoteStatus;
   published_at: string | null;
   notified_at: string | null;
@@ -54,6 +57,9 @@ export interface JobFull {
   matched_keywords: string[];
   score_explanation: string[];
   card_summary: string | null;
+  opportunity_type: string | null;
+  applicant_level: string | null;
+  academic_field: string | null;
   content_hash: string;
   notified_at: string | null;
   status: JobStatus;

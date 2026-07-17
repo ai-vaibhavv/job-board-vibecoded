@@ -55,8 +55,8 @@ export function AppShell() {
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-4 border-b border-border bg-surface-raised px-4 py-2.5">
         <NavLink to="/" className="flex items-center gap-2">
-          <span className="text-xl">🎓</span>
-          <span className="text-base font-bold text-ink">Job Board</span>
+          <img src="/logo.png" alt="" className="h-6 w-6 rounded" />
+          <span className="text-base font-bold text-ink">LabScout</span>
         </NavLink>
         <nav className="flex items-center gap-1">
           <NavLink to="/" end className={navClass}>

@@ -205,6 +205,35 @@ _MIGRATIONS: list[str] = [
         updated_at  TEXT NOT NULL
     );
     """,
+    # v8 — LabScout academic taxonomy: coarse fields on `jobs`, plus a Pass-2
+    # detail cache side table.
+    #
+    # `opportunity_type`, `applicant_level` and `academic_field` are the three
+    # high-value taxonomy fields the two-pass LLM classifier fills. They ride the
+    # normal `upsert` path — same additive discipline as v5's `card_summary`:
+    # adding a column to `jobs` means touching the `Job` model, the INSERT column
+    # list and `_row_to_job` in one change, and the model is `extra="forbid"` so a
+    # half-done version fails loudly. Richer fields (institution, PI, weekly hours)
+    # stay LLM-only for now rather than becoming a table of perma-null columns.
+    #
+    # `job_opportunity_details` caches the Pass-2 verdict, keyed on content_hash +
+    # prompt_version exactly like `job_assessments`, so a run pays for the detail
+    # pass only on jobs it has never fine-classified. A side table, so it never
+    # rides the hot `upsert` conflict path.
+    """
+    ALTER TABLE jobs ADD COLUMN opportunity_type TEXT;
+    ALTER TABLE jobs ADD COLUMN applicant_level TEXT;
+    ALTER TABLE jobs ADD COLUMN academic_field TEXT;
+
+    CREATE TABLE IF NOT EXISTS job_opportunity_details (
+        job_id          TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash    TEXT NOT NULL,
+        prompt_version  INTEGER NOT NULL,
+        detail_json     TEXT NOT NULL,
+        provider        TEXT,
+        classified_at   TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -430,8 +459,9 @@ class Database:
                     published_at, discovered_at, enriched_at,
                     application_deadline, employment_type, language, salary,
                     relevance_score, matched_keywords, score_explanation, card_summary,
+                    opportunity_type, applicant_level, academic_field,
                     content_hash, notified_at, status
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     title             = excluded.title,
                     organization      = excluded.organization,
@@ -447,6 +477,12 @@ class Database:
                     matched_keywords  = excluded.matched_keywords,
                     score_explanation = excluded.score_explanation,
                     card_summary      = excluded.card_summary,
+                    -- COALESCE so a re-discovery whose Pass-2 detail call did not
+                    -- run (cache miss + LLM down) does not wipe a previously stored
+                    -- taxonomy value with NULL.
+                    opportunity_type  = COALESCE(excluded.opportunity_type, jobs.opportunity_type),
+                    applicant_level   = COALESCE(excluded.applicant_level, jobs.applicant_level),
+                    academic_field    = COALESCE(excluded.academic_field, jobs.academic_field),
                     content_hash      = excluded.content_hash,
                     application_deadline = excluded.application_deadline
                 """,
@@ -475,6 +511,9 @@ class Database:
                     json.dumps(job.matched_keywords),
                     json.dumps(job.score_explanation),
                     job.card_summary,
+                    job.opportunity_type,
+                    job.applicant_level,
+                    job.academic_field,
                     job.content_hash,
                     _dt(job.notified_at),
                     job.status.value,
@@ -556,6 +595,59 @@ class Database:
                     content_hash,
                     prompt_version,
                     json.dumps(assessment),
+                    provider,
+                    _dt(when or datetime.now(UTC)),
+                ),
+            )
+
+    # -- opportunity detail cache (Pass 2) --------------------------------
+
+    def get_detail(self, job_id: str, content_hash: str, prompt_version: int) -> dict | None:
+        """A cached Pass-2 detail verdict, if one was made for *this* posting text
+        under *this* detail prompt. Otherwise None, and the caller pays for a
+        fresh classification. Same key discipline as `get_assessment`."""
+        row = self._conn.execute(
+            """
+            SELECT detail_json FROM job_opportunity_details
+            WHERE job_id = ? AND content_hash = ? AND prompt_version = ?
+            """,
+            (job_id, content_hash, prompt_version),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["detail_json"])
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            logger.warning("cached detail for %s is not valid json; ignoring", job_id)
+            return None
+
+    def save_detail(
+        self,
+        job_id: str,
+        content_hash: str,
+        prompt_version: int,
+        detail: dict,
+        provider: str | None = None,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_opportunity_details
+                    (job_id, content_hash, prompt_version, detail_json, provider, classified_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hash    = excluded.content_hash,
+                    prompt_version  = excluded.prompt_version,
+                    detail_json     = excluded.detail_json,
+                    provider        = excluded.provider,
+                    classified_at   = excluded.classified_at
+                """,
+                (
+                    job_id,
+                    content_hash,
+                    prompt_version,
+                    json.dumps(detail),
                     provider,
                     _dt(when or datetime.now(UTC)),
                 ),
@@ -778,6 +870,9 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         matched_keywords=json.loads(row["matched_keywords"] or "[]"),
         score_explanation=json.loads(row["score_explanation"] or "[]"),
         card_summary=row["card_summary"],
+        opportunity_type=row["opportunity_type"],
+        applicant_level=row["applicant_level"],
+        academic_field=row["academic_field"],
         content_hash=row["content_hash"],
         notified_at=_parse_dt(row["notified_at"]),
         status=row["status"],

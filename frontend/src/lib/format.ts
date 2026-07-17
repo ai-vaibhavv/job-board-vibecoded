@@ -30,6 +30,26 @@ export function relativeTime(iso: string | null): string {
   return "";
 }
 
+// Acronyms kept as-is when a taxonomy value is turned into a display label.
+const LABEL_ACRONYMS: Record<string, string> = {
+  ml: "ML",
+  ai: "AI",
+  nlp: "NLP",
+  hiwi: "HiWi",
+  ee: "EE",
+  me: "ME",
+  phd: "PhD",
+};
+
+/** Taxonomy value ("master_thesis", "ml") → display label ("Master Thesis", "ML"). */
+export function prettyLabel(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .split("_")
+    .map((w) => LABEL_ACRONYMS[w] ?? w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 /** Status → display label + tailwind classes for the status pill. */
 export const STATUS_META: Record<string, { label: string; classes: string }> = {
   new: { label: "New", classes: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
