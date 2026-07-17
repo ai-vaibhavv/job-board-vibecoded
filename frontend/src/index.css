@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Semantic tokens. Light is the default; `.dark` on <html> flips them. Values
+   are space-separated RGB channels so Tailwind's `<alpha-value>` works. */
+:root {
+  --surface: 247 248 250; /* app background */
+  --surface-raised: 255 255 255; /* cards, panels */
+  --surface-sunken: 241 243 245; /* inputs, wells */
+  --border: 226 229 233;
+  --ink: 23 27 33;
+  --ink-muted: 90 98 110;
+  --ink-subtle: 140 148 160;
+  --accent: 79 70 229; /* indigo-600 */
+  --accent-ink: 255 255 255;
+}
+
+.dark {
+  --surface: 15 18 23;
+  --surface-raised: 24 28 36;
+  --surface-sunken: 30 35 44;
+  --border: 42 48 58;
+  --ink: 233 236 240;
+  --ink-muted: 156 164 176;
+  --ink-subtle: 110 118 130;
+  --accent: 129 140 248; /* indigo-400 for contrast on dark */
+  --accent-ink: 17 20 26;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+}
+
+/* A slimmer, theme-aware scrollbar for the scrolling panes. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--border));
+  border-radius: 9999px;
+}

@@ -1,0 +1,29 @@
+- CSV
+
+75B0B2,1D3054,2B4C68,051D43,FFFFFF
+
+- With #
+
+#75B0B2, #1D3054, #2B4C68, #051D43, #FFFFFF
+
+- Array
+
+["75B0B2","1D3054","2B4C68","051D43","FFFFFF"]
+
+- Object
+
+{"Tropical Teal":"75B0B2","Twilight Indigo":"1D3054","Yale Blue":"2B4C68","Prussian Blue":"051D43","White":"FFFFFF"}
+
+- Extended Array
+
+[{"name":"Tropical Teal","hex":"75B0B2","rgb":[117,176,178],"cmyk":[34,1,0,30],"hsb":[182,34,70],"hsl":[182,28,58],"lab":[68,-19,-7]},{"name":"Twilight Indigo","hex":"1D3054","rgb":[29,48,84],"cmyk":[65,43,0,67],"hsb":[219,65,33],"hsl":[219,49,22],"lab":[20,5,-24]},{"name":"Yale Blue","hex":"2B4C68","rgb":[43,76,104],"cmyk":[59,27,0,59],"hsb":[208,59,41],"hsl":[208,41,29],"lab":[31,-3,-20]},{"name":"Prussian Blue","hex":"051D43","rgb":[5,29,67],"cmyk":[93,57,0,74],"hsb":[217,93,26],"hsl":[217,86,14],"lab":[11,8,-27]},{"name":"White","hex":"FFFFFF","rgb":[255,255,255],"cmyk":[0,0,0,0],"hsb":[0,0,100],"hsl":[0,0,100],"lab":[100,0,0]}]
+
+- XML
+
+<palette>
+  <color name="Tropical Teal" hex="75B0B2" r="117" g="176" b="178" />
+  <color name="Twilight Indigo" hex="1D3054" r="29" g="48" b="84" />
+  <color name="Yale Blue" hex="2B4C68" r="43" g="76" b="104" />
+  <color name="Prussian Blue" hex="051D43" r="5" g="29" b="67" />
+  <color name="White" hex="FFFFFF" r="255" g="255" b="255" />
+</palette>

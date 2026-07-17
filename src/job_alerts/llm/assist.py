@@ -26,10 +26,9 @@ from .providers import _extract_json
 
 logger = logging.getLogger(__name__)
 
-# The single biggest guard against blowing an 8k-token context: a posting can be
-# 5000 chars, and translation output is roughly as long as its input, so an
-# unbounded call can exceed the window and return a silently truncated half.
-_MAX_TRANSLATE_INPUT_CHARS = 4000
+# Translation input/output caps now live in LlmSettings (translate_max_input_chars
+# / translate_max_output_tokens) so they can be tuned to the model's context
+# without a code change. The resume path keeps its own module-level cap.
 _MAX_RESUME_INPUT_CHARS = 6000
 _MAX_KEYWORDS = 5
 
@@ -127,14 +126,15 @@ async def translate_job_text(
 
     Returns `{"description_en", "card_summary_en", "truncated"}`, or None when
     the endpoint is unavailable or the reply is unusable. `truncated` reports
-    that the input was clipped to `_MAX_TRANSLATE_INPUT_CHARS` before sending, so
-    the UI can label the result an excerpt.
+    that the input was clipped to `llm.translate_max_input_chars` before sending,
+    so the UI can label the result an excerpt.
     """
     if not text or not text.strip():
         return None
 
-    truncated = len(text) > _MAX_TRANSLATE_INPUT_CHARS
-    clipped = text[:_MAX_TRANSLATE_INPUT_CHARS]
+    max_input = llm.translate_max_input_chars
+    truncated = len(text) > max_input
+    clipped = text[:max_input]
 
     user = (
         "Translate this German job posting into natural English. Then write a "
@@ -147,7 +147,9 @@ async def translate_job_text(
         f"POSTING:\n{clipped}"
     )
 
-    reply = await _chat(llm, secrets, _TRANSLATE_SYSTEM, user, max_tokens=1200)
+    reply = await _chat(
+        llm, secrets, _TRANSLATE_SYSTEM, user, max_tokens=llm.translate_max_output_tokens
+    )
     if reply is None:
         return None
 

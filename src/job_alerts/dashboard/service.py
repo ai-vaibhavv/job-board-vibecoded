@@ -19,6 +19,7 @@ import asyncio
 import html
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ..config import (
     ConfigError,
@@ -29,8 +30,11 @@ from ..config import (
     load_sources,
 )
 from ..database import Database
-from ..llm.assist import extract_search_terms, translate_job_text
+from ..enrich import apply_url_from_text, extract, outbound_links_from_text
+from ..http import FetchError, PoliteClient, host_is_denied
+from ..llm.assist import endpoint_online, extract_search_terms, translate_job_text
 from ..models import Job, JobStatus, Language
+from ..normalization import content_hash as compute_content_hash
 from ..notifications.discord import (
     DiscordNotifier,
     _color_for,
@@ -62,17 +66,59 @@ class AppConfig:
 
 _config: AppConfig | None = None
 
+# Secret fields the Settings UI may overlay (stored in app_config, applied over
+# .env). The LLM tunnel URL is a *setting*, not a secret, and is handled
+# separately below. Keep in step with `EDITABLE_SETTINGS`.
+_OVERLAY_SECRET_FIELDS = (
+    "discord_webhook_url",
+    "search_api_provider",
+    "search_api_key",
+    "google_cse_id",
+    "colab_api_key",
+    "apify_token",
+)
+
 
 def get_config() -> AppConfig:
     global _config
     if _config is None:
-        secrets = Secrets()
+        # First pass with plain env to learn the database path — the overlay
+        # lives in that database, so it cannot itself change where the DB is.
+        base_secrets = Secrets()
+        base_settings = load_settings(secrets=base_secrets)
+
+        overlay: dict[str, str] = {}
+        try:
+            with Database(base_settings.database.path) as db:
+                overlay = db.get_config_overlay()
+        except Exception:  # a missing/locked DB must not stop config loading
+            logger.debug("could not read config overlay", exc_info=True)
+
+        secret_overrides = {k: v for k, v in overlay.items() if k in _OVERLAY_SECRET_FIELDS}
+        if secret_overrides:
+            # Passing init kwargs makes pydantic-settings prefer them over .env
+            # AND run field validators (e.g. the provider normalizer).
+            secrets = Secrets(**secret_overrides)
+            settings = load_settings(secrets=secrets)
+        else:
+            secrets, settings = base_secrets, base_settings
+
+        if overlay.get("colab_base_url"):
+            settings.llm.colab_base_url = overlay["colab_base_url"]
+
         _config = AppConfig(
-            settings=load_settings(secrets=secrets),
+            settings=settings,
             sources=load_sources(secrets=secrets),
             secrets=secrets,
         )
     return _config
+
+
+def reload_config() -> None:
+    """Drop the cached config so the next `get_config()` re-reads .env AND the
+    overlay. Called after the Settings UI writes a secret."""
+    global _config
+    _config = None
 
 
 def topic_choices() -> list[str]:
@@ -95,6 +141,41 @@ def source_choices() -> list[str]:
 ROW_HEADERS = ["Score", "Title", "Organization", "Location", "Source", "Lang", "Status", "Sent"]
 
 
+def _filtered_jobs(
+    *,
+    status: str | None = None,
+    min_score: int | None = None,
+    source: str | None = None,
+    text: str | None = None,
+    show_hidden: bool = False,
+) -> list[tuple[Job, bool]]:
+    """The jobs matching the dashboard filters, each paired with whether it is
+    soft-hidden. The single source of truth for both the Gradio table
+    (`list_rows`) and the JSON API (`list_jobs_json`) — filtering lives here once.
+    """
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        jobs = db.list_jobs(
+            status=JobStatus(status) if status else None,
+            min_score=min_score,
+            limit=10000,
+        )
+        hidden = db.hidden_ids()
+
+    needle = (text or "").strip().casefold()
+    result: list[tuple[Job, bool]] = []
+    for job in jobs:
+        is_hidden = job.id in hidden
+        if is_hidden and not show_hidden:
+            continue
+        if source and job.source != source:
+            continue
+        if needle and needle not in _haystack(job):
+            continue
+        result.append((job, is_hidden))
+    return result
+
+
 def list_rows(
     *,
     status: str | None = None,
@@ -108,25 +189,11 @@ def list_rows(
     Returns (display_rows, ids). The UI keeps `ids` in state and maps a selected
     row index back to a job id — the id is never shown as a column.
     """
-    cfg = get_config()
-    with Database(cfg.db_path) as db:
-        jobs = db.list_jobs(
-            status=JobStatus(status) if status else None,
-            min_score=min_score,
-            limit=10000,
-        )
-        hidden = set() if show_hidden else db.hidden_ids()
-
-    needle = (text or "").strip().casefold()
     rows: list[list] = []
     ids: list[str] = []
-    for job in jobs:
-        if job.id in hidden:
-            continue
-        if source and job.source != source:
-            continue
-        if needle and needle not in _haystack(job):
-            continue
+    for job, _hidden in _filtered_jobs(
+        status=status, min_score=min_score, source=source, text=text, show_hidden=show_hidden
+    ):
         rows.append(
             [
                 job.relevance_score,
@@ -141,6 +208,47 @@ def list_rows(
         )
         ids.append(job.id)
     return rows, ids
+
+
+def _job_summary(job: Job, *, hidden: bool) -> dict:
+    """The compact per-job payload a job card needs — no description body."""
+    return {
+        "id": job.id,
+        "title": job.title,
+        "organization": job.organization,
+        "location": job.location or job.city,
+        "city": job.city,
+        "country": job.country,
+        "source": job.source,
+        "language": job.language.value,
+        "status": job.status.value,
+        "relevance_score": job.relevance_score,
+        "score_color": f"#{_color_for(job.relevance_score):06x}",
+        "matched_keywords": job.matched_keywords,
+        "remote_status": job.remote_status.value,
+        "published_at": job.published_at.isoformat() if job.published_at else None,
+        "notified_at": job.notified_at.isoformat() if job.notified_at else None,
+        "url": job.url,
+        "logo": org_image_url(job),
+        "hidden": hidden,
+    }
+
+
+def list_jobs_json(
+    *,
+    status: str | None = None,
+    min_score: int | None = None,
+    source: str | None = None,
+    text: str | None = None,
+    show_hidden: bool = False,
+) -> list[dict]:
+    """The filtered job list as JSON-ready summary dicts for the React UI."""
+    return [
+        _job_summary(job, hidden=hidden)
+        for job, hidden in _filtered_jobs(
+            status=status, min_score=min_score, source=source, text=text, show_hidden=show_hidden
+        )
+    ]
 
 
 def _haystack(job: Job) -> str:
@@ -231,6 +339,313 @@ def job_detail(job_id: str | None) -> Detail:
         confirm_label=confirm_label,
         is_german=is_german,
     )
+
+
+def job_detail_json(job_id: str | None) -> dict:
+    """Structured detail for one job, for the React UI to render itself.
+
+    Read-only and LLM-independent: it returns the *cached* translation if one
+    exists but never triggers a live translation or page fetch — that is what
+    `refresh_job_detail` is for, which the UI calls on open. Includes the last
+    on-demand fetch outcome (link status, best apply link) so the UI can render
+    the posting link and any "expired" state without another round trip.
+    """
+    if not job_id:
+        return {"exists": False}
+
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        job = db.get(job_id)
+        if job is None:
+            return {"exists": False}
+        is_german = job.language == Language.DE
+        translation = db.get_translation(job_id, job.content_hash) if is_german else None
+        fetch = db.get_detail_fetch(job_id)
+        hidden = job_id in db.hidden_ids()
+
+    needs_confirm = False
+    confirm_label = ""
+    rejection_reason: str | None = None
+    if job.status == JobStatus.REJECTED:
+        needs_confirm = True
+        rejection_reason = _rejection_reason(job)
+        confirm_label = f"⚠️ This job was filtered out ({rejection_reason}). Tick to publish anyway."
+    elif job.notified_at is not None:
+        needs_confirm = True
+        when = job.notified_at.strftime("%Y-%m-%d %H:%M")
+        confirm_label = f"⚠️ Already sent on {when}. Tick to send again."
+
+    data = job.model_dump(mode="json")
+    data["logo"] = org_image_url(job)
+    data["score_color"] = f"#{_color_for(job.relevance_score):06x}"
+
+    link_status = fetch["link_status"] if fetch else None
+    apply_url = (fetch["apply_url"] if fetch and fetch.get("apply_url") else None) or job.url
+
+    return {
+        "exists": True,
+        "job": data,
+        "translation": translation,
+        "is_german": is_german,
+        "translation_unavailable": is_german and translation is None,
+        "needs_confirm": needs_confirm,
+        "confirm_label": confirm_label,
+        "rejection_reason": rejection_reason,
+        "hidden": hidden,
+        "link_status": link_status,
+        "apply_url": apply_url,
+        "alternate_links": fetch["alternate_links"] if fetch else [],
+        "detail_fetched_at": fetch["fetched_at"] if fetch else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# On-demand full fetch + link check
+# ---------------------------------------------------------------------------
+
+_DEAD_STATUSES = {404, 410}
+_MAX_DETAIL_DESCRIPTION_CHARS = 20_000
+
+
+def _candidate_links(job: Job) -> list[str]:
+    """Alternate apply links for a job whose primary URL is dead: an apply form
+    the source recorded, a form URL named in the description, then any other
+    outbound link in the text. Ordered, de-duplicated, primary URL excluded."""
+    candidates: list[str] = []
+    if job.contact_url:
+        candidates.append(job.contact_url)
+    apply = apply_url_from_text(job.description or "")
+    if apply:
+        candidates.append(apply)
+    candidates.extend(outbound_links_from_text(job.description or ""))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for link in candidates:
+        if link and link != job.url and link not in seen:
+            seen.add(link)
+            out.append(link)
+    return out
+
+
+async def _fetch_and_check(http_settings, job: Job) -> dict:
+    """Fetch the posting page and classify the link. Returns link_status plus,
+    on success, the `Extracted` page content. Never raises.
+
+    link_status: "alive" | "moved" (primary dead, a live alternate found) |
+    "dead" (404/410, no live alternate) | "unverifiable" (LinkedIn / robots /
+    timeout / transport / 5xx — not confirmed gone, so never auto-hidden)."""
+    result: dict = {
+        "link_status": "unverifiable",
+        "apply_url": job.url,
+        "alternate_links": [],
+        "extracted": None,
+    }
+    if host_is_denied(job.url):
+        return result  # LinkedIn et al. — cannot fetch, cannot verify
+
+    async with PoliteClient(http_settings) as client:
+        try:
+            body = await client.get_text(job.url)
+        except FetchError as exc:
+            if getattr(exc, "status_code", None) not in _DEAD_STATUSES:
+                return result  # transient / robots — leave as unverifiable
+            alts = _candidate_links(job)
+            result["alternate_links"] = alts
+            for alt in alts:
+                if host_is_denied(alt):
+                    continue
+                try:
+                    await client.get_text(alt)
+                except FetchError:
+                    continue
+                result["link_status"] = "moved"
+                result["apply_url"] = alt
+                return result
+            result["link_status"] = "dead"
+            return result
+
+        result["link_status"] = "alive"
+        result["extracted"] = extract(body)
+        return result
+
+
+def refresh_job_detail(job_id: str) -> dict:
+    """Fetch the real posting page for one job, store the fuller description,
+    act on the link status, (re)translate a German posting, and return the
+    updated detail.
+
+    A definitively dead link (404/410) with no live alternate is soft-hidden
+    (reversible); a transient failure or an unverifiable host hides nothing."""
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        job = db.get(job_id)
+    if job is None:
+        return {"exists": False}
+
+    res = asyncio.run(_fetch_and_check(cfg.settings.http, job))
+    status = res["link_status"]
+    description_changed = False
+
+    with Database(cfg.db_path) as db:
+        if status == "alive" and res["extracted"] is not None:
+            ex = res["extracted"]
+            if ex.description and len(ex.description) > len(job.description or ""):
+                job.description = ex.description[:_MAX_DETAIL_DESCRIPTION_CHARS]
+                description_changed = True
+            if job.published_at is None and ex.published_at:
+                job.published_at = ex.published_at
+            if job.location is None and ex.location:
+                job.location = ex.location
+            if job.contact_email is None and ex.contact_email:
+                job.contact_email = ex.contact_email
+            if job.contact_url is None and ex.contact_url:
+                job.contact_url = ex.contact_url
+            if description_changed:
+                # The description grew; content_hash truncates to 500 chars so it
+                # may not change, but the translation cache must miss regardless.
+                job.content_hash = compute_content_hash(
+                    job.title, job.organization, job.location, job.description
+                )
+                job.enriched_at = datetime.now(UTC)
+                db.upsert(job)
+                db.delete_translation(job_id)
+        elif status == "dead":
+            db.hide_job(job_id)
+
+        db.save_detail_fetch(
+            job_id,
+            link_status=status,
+            apply_url=res["apply_url"],
+            alternate_links=res["alternate_links"],
+            description_len=len(job.description or ""),
+        )
+
+    # Re-translate a German posting on the fuller text (cache-first; the cache
+    # was cleared above if the description grew).
+    if job.language == Language.DE:
+        translate_job(job_id)
+
+    return job_detail_json(job_id)
+
+
+async def _is_definitely_dead(client: PoliteClient, job: Job) -> bool:
+    """True only when the primary URL is 404/410 AND no alternate link resolves.
+    A transient/unverifiable failure returns False — the sweep never hides on
+    doubt."""
+    try:
+        await client.get_text(job.url)
+        return False
+    except FetchError as exc:
+        if getattr(exc, "status_code", None) not in _DEAD_STATUSES:
+            return False
+    for alt in _candidate_links(job):
+        if host_is_denied(alt):
+            continue
+        try:
+            await client.get_text(alt)
+            return False
+        except FetchError:
+            continue
+    return True
+
+
+def check_all_links() -> str:
+    """Link-check every non-hidden, non-LinkedIn job and soft-hide the ones whose
+    posting is definitively gone. Returns a human summary. Runs as a background
+    task (it makes one polite request per job)."""
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        jobs = db.list_jobs(limit=1_000_000)
+        hidden = db.hidden_ids()
+    targets = [j for j in jobs if j.id not in hidden and not host_is_denied(j.url)]
+
+    async def _run() -> list[str]:
+        dead: list[str] = []
+        async with PoliteClient(cfg.settings.http) as client:
+            for job in targets:
+                if await _is_definitely_dead(client, job):
+                    dead.append(job.id)
+        return dead
+
+    dead_ids = asyncio.run(_run())
+    with Database(cfg.db_path) as db:
+        for jid in dead_ids:
+            db.hide_job(jid)
+            db.save_detail_fetch(
+                jid, link_status="dead", apply_url=None, alternate_links=[], description_len=0
+            )
+    skipped = len(jobs) - len(targets) - len(hidden)
+    return (
+        f"Checked {len(targets)} link(s); hid {len(dead_ids)} expired posting(s). "
+        f"{max(skipped, 0)} LinkedIn posting(s) skipped (cannot be verified)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Settings (secrets overlay)
+# ---------------------------------------------------------------------------
+
+# Secret keys the Settings UI may write; masked on read. The search provider and
+# the LLM tunnel URL are also editable but shown in the clear (not secrets).
+EDITABLE_SECRET_KEYS = (
+    "discord_webhook_url",
+    "search_api_key",
+    "google_cse_id",
+    "colab_api_key",
+    "apify_token",
+)
+_SEARCH_PROVIDERS = ("", "tavily", "brave", "bing", "google_cse", "serpapi")
+
+
+def _mask(value: str | None) -> dict:
+    v = (value or "").strip()
+    if not v:
+        return {"set": False, "hint": ""}
+    return {"set": True, "hint": f"…{v[-4:]}" if len(v) >= 4 else "set"}
+
+
+def get_settings_status() -> dict:
+    """What the Settings page shows: which secrets are set (masked, never the raw
+    value) plus the editable non-secret values."""
+    cfg = get_config()
+    s = cfg.secrets
+    return {
+        "secrets": {k: _mask(getattr(s, k)) for k in EDITABLE_SECRET_KEYS},
+        "search_api_provider": s.search_api_provider,
+        "colab_base_url": cfg.settings.llm.colab_base_url,
+        "providers": list(_SEARCH_PROVIDERS),
+    }
+
+
+def save_settings(values: dict) -> dict:
+    """Persist overlay values (empty string clears a key back to .env) and apply
+    them to the live config in place, so the change takes effect immediately
+    without re-reading the config files. Returns the new masked status."""
+    allowed = set(EDITABLE_SECRET_KEYS) | {"search_api_provider", "colab_base_url"}
+    clean: dict[str, str] = {}
+    for key, value in values.items():
+        if key not in allowed:
+            continue
+        val = "" if value is None else str(value).strip()
+        if key == "search_api_provider" and val not in _SEARCH_PROVIDERS:
+            raise ValueError(f"unknown search provider: {val!r}")
+        clean[key] = val
+
+    cfg = get_config()
+    with Database(cfg.db_path) as db:
+        db.set_config_overlay(clean)
+
+    # Apply in place. The from-scratch path in `get_config()` applies the same
+    # overlay on a fresh process; this keeps a long-running process in step
+    # without discarding sources/settings already loaded.
+    for key in _OVERLAY_SECRET_FIELDS:
+        if key in clean:
+            setattr(cfg.secrets, key, clean[key])
+    if "colab_base_url" in clean:
+        cfg.settings.llm.colab_base_url = clean["colab_base_url"]
+
+    return get_settings_status()
 
 
 def _rejection_reason(job: Job) -> str:
@@ -515,6 +930,23 @@ def run_search(keywords: str, topics: list[str] | None, locations: list[str] | N
         f"{summary.newly_stored} newly stored, {summary.above_threshold} above threshold. "
         f"Nothing sent to Discord; review and publish below."
     )
+
+
+def llm_online() -> bool:
+    """Whether the self-hosted LLM endpoint is reachable right now. Drives the
+    UI's 'translation/search disabled' banner; never raises."""
+    cfg = get_config()
+    try:
+        return asyncio.run(endpoint_online(cfg.settings.llm, cfg.secrets))
+    except Exception:  # a config/network hiccup means "offline", not a 500
+        logger.debug("llm_online check failed", exc_info=True)
+        return False
+
+
+def stats() -> dict:
+    """Raw stats dict from the database, for the JSON API."""
+    with Database(get_config().db_path) as db:
+        return db.stats()
 
 
 def stats_line() -> str:

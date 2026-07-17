@@ -37,7 +37,17 @@ _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class FetchError(RuntimeError):
-    """A request failed in a way the caller should report, not retry."""
+    """A request failed in a way the caller should report, not retry.
+
+    `status_code` is the HTTP status when the failure was a definite response
+    (e.g. 404, 410) and None when there was none to read (timeout, DNS/transport
+    error, robots/host denial). The on-demand link check uses it to tell a truly
+    dead posting (404/410 → safe to auto-hide) from a merely unreachable one.
+    """
+
+    def __init__(self, *args: object, status_code: int | None = None) -> None:
+        super().__init__(*args)
+        self.status_code = status_code
 
 
 class RobotsDisallowed(FetchError):
@@ -324,7 +334,8 @@ class PoliteClient:
                     )
         except _RetryableStatus as exc:
             raise FetchError(
-                f"{url} failed after {attempts} attempts: HTTP {exc.status_code}"
+                f"{url} failed after {attempts} attempts: HTTP {exc.status_code}",
+                status_code=exc.status_code,
             ) from exc
         except httpx.TimeoutException as exc:
             raise FetchError(f"{url} timed out after {attempts} attempts") from exc
@@ -363,7 +374,7 @@ class PoliteClient:
             raise _RetryableStatus(status)
         if 400 <= status < 500:
             # Permanent client errors: retrying cannot help.
-            raise FetchError(f"{url} returned HTTP {status}")
+            raise FetchError(f"{url} returned HTTP {status}", status_code=status)
         if status >= 500:  # pragma: no cover — covered by _RETRYABLE_STATUS
             raise _RetryableStatus(status)
         return response.text

@@ -91,22 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("show-config", help="show effective configuration (secrets masked)")
 
-    dashboard = sub.add_parser(
-        "dashboard", help="launch the web dashboard (needs the 'dashboard' extra)"
+    serve = sub.add_parser(
+        "serve", help="run the JSON API for the React dashboard (needs the 'api' extra)"
     )
-    dashboard.add_argument("--host", default="127.0.0.1")
-    dashboard.add_argument("--port", type=int, default=7860)
-    dashboard.add_argument(
-        "--share", action="store_true", help="expose a public link (needs --auth)"
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=7860)
+    serve.add_argument(
+        "--static-dir",
+        default=None,
+        help="also serve a built React SPA from this directory (single-container mode)",
     )
-    dashboard.add_argument("--auth", help="username:password required for --share")
-    dashboard.add_argument(
-        "--wait-for-llm",
-        action="store_true",
-        help="wait until the LLM endpoint is online before launching (used in Docker)",
-    )
-    dashboard.add_argument("--wait-interval", type=float, default=10.0)
-    dashboard.add_argument("--wait-timeout", type=float, default=0.0)
+    serve.add_argument("--reload", action="store_true", help="auto-reload on code changes (dev)")
 
     return parser
 
@@ -342,32 +337,29 @@ def cmd_check_source(args: argparse.Namespace) -> int:
     return asyncio.run(_check())
 
 
-def cmd_dashboard(args: argparse.Namespace) -> int:
-    """Launch the Gradio web dashboard.
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Launch the FastAPI JSON API.
 
-    Gradio is an optional dependency, imported lazily here so the core tool runs
-    without it. `pip install -e ".[dashboard]"` adds it.
+    FastAPI/uvicorn are optional, imported lazily here so the core tool runs
+    without them. `pip install -e ".[api]"` adds them.
     """
     try:
-        from .dashboard.app import main as dashboard_main
+        from .api.server import main as serve_main
     except ModuleNotFoundError as exc:
         print(
-            "The dashboard needs the optional 'dashboard' extra.\n"
-            '  Install it with:  pip install -e ".[dashboard]"\n'
+            "The API server needs the optional 'api' extra.\n"
+            '  Install it with:  pip install -e ".[api]"\n'
             f"  (missing: {exc.name})",
             file=sys.stderr,
         )
         return 4
 
     argv = ["--host", args.host, "--port", str(args.port)]
-    if args.share:
-        argv.append("--share")
-    if args.auth:
-        argv += ["--auth", args.auth]
-    if args.wait_for_llm:
-        argv.append("--wait-for-llm")
-    argv += ["--wait-interval", str(args.wait_interval), "--wait-timeout", str(args.wait_timeout)]
-    return dashboard_main(argv)
+    if args.static_dir:
+        argv += ["--static-dir", args.static_dir]
+    if args.reload:
+        argv.append("--reload")
+    return serve_main(argv)
 
 
 def cmd_show_config(args: argparse.Namespace) -> int:
@@ -420,7 +412,7 @@ _COMMANDS = {
     "export": cmd_export,
     "check-source": cmd_check_source,
     "show-config": cmd_show_config,
-    "dashboard": cmd_dashboard,
+    "serve": cmd_serve,
 }
 
 

@@ -22,8 +22,9 @@ self-hosted LLM judge), deduplicates against history, stores everything in
 SQLite, and sends **only new, relevant** jobs to Discord — marking them notified
 only after Discord confirms delivery. A run summary is printed at the end.
 
-- **Two ways to use it**: a headless CLI/scheduler, or a **Gradio dashboard** for
-  browsing, translating, searching and hand-picking what to publish.
+- **Two ways to use it**: a headless CLI/scheduler, or a **React dashboard**
+  (FastAPI + Vite) for browsing, translating, searching and hand-picking what to
+  publish.
 - **German → English**: the dashboard translates German postings on demand (via
   the LLM) and Discord always receives the English version.
 - **Explainable scoring**: every score carries a stored, human-readable reason.
@@ -42,7 +43,7 @@ only after Discord confirms delivery. A run summary is printed at the end.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dashboard]"          # omit [dashboard] for CLI-only
+pip install -e ".[api]"                # omit [api] for CLI-only
 
 cp .env.example .env                    # add DISCORD_WEBHOOK_URL
 cp config/settings.example.yaml config/settings.yaml
@@ -64,7 +65,7 @@ keyword scorer is used.
 | Command | Purpose |
 |---|---|
 | `search [--dry-run]` | Run one full search now |
-| `dashboard` | Launch the web UI (see below) |
+| `serve` | Launch the JSON API for the React dashboard (see below) |
 | `send-test` | Test the Discord webhook |
 | `list [--new] [--min-score N] [--explain]` | List stored jobs |
 | `stats` | Database statistics |
@@ -75,32 +76,44 @@ keyword scorer is used.
 
 ## Dashboard
 
+A **React** SPA (Vite + TypeScript + Tailwind) over a thin **FastAPI** JSON layer.
+A two-pane job board: filters, a scrollable list of job cards, and a detail panel.
+
 ```bash
-python -m job_alerts dashboard          # http://127.0.0.1:7860
+python -m job_alerts serve              # JSON API on http://127.0.0.1:7860
+cd frontend && npm install && npm run dev   # UI on http://localhost:5173 (proxies /api)
 ```
 
-- **Browse & filter** all stored jobs; click a row for the full posting.
+- **Browse & filter** all stored jobs; click a card for the full posting.
 - **German jobs** show an English translation first (cached after the first
   open), original German collapsible below.
 - **Publish per job** to Discord, in English — publishing a filtered-out or
   already-sent job asks for confirmation.
-- **Search** turns keywords / topics / an uploaded resume into live queries, runs
-  the pipeline, and **stores only** (nothing auto-sent). "Hide" declutters your
-  view without deleting.
-- `--share` exposes a public link and therefore **requires** `--auth user:pass`.
+- **Search** turns keywords / topics / an uploaded resume into live queries and
+  runs the pipeline as a **background task** (poll for progress), **storing only**
+  (nothing auto-sent). "Hide" declutters your view without deleting.
+- **No LLM startup gate**: browsing works immediately; only translation and new
+  searches need the tunnel, and they degrade gracefully when it is down.
+- Set `JOB_ALERTS_API_AUTH=user:pass` to require HTTP Basic on the write
+  endpoints (publish / run-search / resume) before exposing the API beyond
+  localhost.
 
 ## Docker
 
-`docker compose up` waits for the LLM endpoint to come online, then serves the
-dashboard on http://localhost:7860. Config is mounted live (editing
+**One container, one command.** The image builds the React SPA and FastAPI serves
+it alongside `/api` from a single process — no separate frontend server. The
+dashboard is at http://localhost:7860. Config is mounted live (editing
 `llm.colab_base_url` is picked up without a restart); the database persists in a
 named volume.
 
 ```bash
-docker compose up                          # dashboard, gated on the LLM being online
+docker compose up                          # dashboard on http://localhost:7860
 docker compose --profile scheduler up -d   # also run scheduled searches
-docker compose run --rm dashboard send-test
+docker compose run --rm app send-test
 ```
+
+> Local development still runs the API and Vite dev server separately (above) for
+> hot-reload; Docker bundles them into the one image.
 
 ## How it works
 
@@ -115,14 +128,18 @@ a HiWi role — only a stated requirement ("abgeschlossene Promotion") does.
 Layout: `config.py` (pydantic settings), `models.py`, `database.py` (SQLite +
 additive migrations), `filtering.py` / `scoring.py`, `llm/` (prompt + providers +
 translation), `sources/` (rss, html, search_api, linkedin_posts), `dashboard/`
-(Gradio UI), `notifications/discord.py`.
+(Gradio-free service layer reused by the API), `api/` (FastAPI JSON layer),
+`frontend/` (React SPA), `notifications/discord.py`.
 
 ## Development
 
 ```bash
-pip install -e ".[dev,dashboard]"
-pytest          # offline test suite
+pip install -e ".[dev,api]"
+pytest          # offline Python test suite
 ruff check src tests
+
+cd frontend && npm install
+npm run build   # typecheck (tsc) + production build
 ```
 
 ## Privacy

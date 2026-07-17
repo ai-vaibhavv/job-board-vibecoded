@@ -5,28 +5,26 @@
 #   # put your Colab/vLLM tunnel URL in config/settings.yaml -> llm.colab_base_url
 #
 #   docker compose up                            # dashboard on http://localhost:7860
-#                                                #   → waits for the LLM endpoint first
 #   docker compose up -d                         # same, in the background
 #   docker compose --profile scheduler up -d     # also run scheduled searches
-#   docker compose run --rm dashboard send-test  # one-off CLI command in the image
+#   docker compose run --rm app send-test        # one-off CLI command in the image
 #
-# On start the dashboard prints "Waiting for the LLM endpoint…" until your Colab
-# notebook / vLLM server is reachable, then launches. If the tunnel URL changed,
-# edit config/settings.yaml (it is picked up live — no restart needed).
+# ONE container is the whole dashboard: the React SPA and its JSON API are served
+# by the same FastAPI process at http://localhost:7860 (the image builds the SPA
+# and FastAPI serves it — see the Dockerfile). Browsing needs no LLM; only
+# translation and new searches use the Colab tunnel, degrading gracefully when it
+# is down. If the tunnel URL changed, edit config/settings.yaml (picked up live —
+# no restart needed).
 
 services:
-  dashboard:
+  app:
     build: .
     image: germany-research-job-alerts:latest
-    container_name: job-alerts-dashboard
+    container_name: job-alerts
     restart: unless-stopped
 
-    # Wait for the self-hosted LLM to come online, then serve the web UI.
-    command: ["dashboard", "--host", "0.0.0.0", "--wait-for-llm"]
-
-    # So `docker compose up` (attached) shows the "waiting…" prompt and Ctrl+C works.
-    stdin_open: true
-    tty: true
+    # Serve the SPA + JSON API from one process. No LLM startup gate.
+    command: ["serve", "--host", "0.0.0.0"]
 
     ports:
       - "7860:7860"
@@ -38,18 +36,21 @@ services:
     environment:
       TZ: Europe/Berlin
       JOB_ALERTS_DATABASE_PATH: /data/jobs.db
+      # Set JOB_ALERTS_API_AUTH=user:pass in .env to require HTTP Basic on the
+      # write endpoints (publish / run-search / resume) — do this before exposing
+      # the dashboard beyond localhost.
 
     volumes:
       # The database MUST persist: it remembers which jobs were already sent, and
       # holds the translation/hidden state the dashboard writes.
       - jobs-data:/data
-      # Config is mounted read-only; the startup gate re-reads it each poll, so
-      # you can edit llm.colab_base_url without a rebuild or restart.
+      # Config is mounted read-only; the LLM check re-reads it each call, so you
+      # can edit llm.colab_base_url without a rebuild or restart.
       - ./config:/app/config:ro
 
-    # Gradio's temp/uploads and the HF/matplotlib caches (all routed to /tmp by
-    # the image's ENV) go to a RAM-backed tmpfs, so they never fill the Docker
-    # overlay disk. Only the persistent DB touches real disk (the named volume).
+    # Temp/cache writes (routed to /tmp by the image's ENV) go to a RAM-backed
+    # tmpfs, so they never fill the Docker overlay disk. Only the persistent DB
+    # touches real disk (the named volume).
     tmpfs:
       - /tmp
 

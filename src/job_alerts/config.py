@@ -276,6 +276,17 @@ class LlmSettings(BaseModel):
     Groq's 12k tokens/minute limit — two requests per minute. 700 roughly halves
     that while keeping enough text to judge a posting."""
 
+    translate_max_input_chars: int = 8000
+    """Characters of a German posting sent to the dashboard translator. Higher =
+    a fuller English translation, but input + output must fit the model's context
+    (~8k tokens here: 8000 chars ≈ 2k tokens leaves room for the reply). Anything
+    longer is clipped and the UI labels the result an excerpt."""
+
+    translate_max_output_tokens: int = 3000
+    """Max tokens the translator may emit. The old 1200 truncated long postings
+    mid-sentence (and a cut-off JSON reply failed to parse, losing the whole
+    translation). 3000 covers a full page while staying inside the context."""
+
     prefilter_with_keywords: bool = True
     """Run the cheap keyword filter first and only send survivors to the LLM.
     Saves most of the quota. Turn off to let the LLM see every candidate."""

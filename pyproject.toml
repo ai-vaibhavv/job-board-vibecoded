@@ -22,8 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dashboard = [
-    "gradio>=4",
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
     "pypdf>=4",
 ]
 dev = [

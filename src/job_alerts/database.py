@@ -174,6 +174,37 @@ _MIGRATIONS: list[str] = [
         hidden_at  TEXT NOT NULL
     );
     """,
+    # v7 — on-demand detail fetch record, and a writable config overlay.
+    #
+    # `job_detail_fetch` is another side table (same discipline as v6): the
+    # dashboard fetches the full posting page on first open, and records the
+    # outcome here — when it was fetched (so a re-open is instant), whether the
+    # link is alive/dead/moved/unverifiable, and the best apply link plus any
+    # alternates found. The `jobs.description` improvement itself rides the normal
+    # `upsert` path; only this fetch metadata is a side table, so it never gets
+    # clobbered by a pipeline re-discovery.
+    #
+    # `app_config` is a plain key/value overlay written by the Settings UI. It is
+    # the ONLY writable config path in Docker (`.env` is not mounted, `config/` is
+    # read-only), and it lives in the persistent `/data` volume so a UI-set secret
+    # survives a container restart. Values are applied over `.env`/env in
+    # `service.get_config()`.
+    """
+    CREATE TABLE IF NOT EXISTS job_detail_fetch (
+        job_id           TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        fetched_at       TEXT NOT NULL,
+        link_status      TEXT NOT NULL,
+        apply_url        TEXT,
+        alternate_links  TEXT NOT NULL DEFAULT '[]',
+        description_len  INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS app_config (
+        key         TEXT PRIMARY KEY,
+        value       TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -555,6 +586,14 @@ class Database:
             "truncated": bool(row["truncated"]),
         }
 
+    def delete_translation(self, job_id: str) -> None:
+        """Drop a cached translation. Used when the dashboard re-fetches a fuller
+        description: `content_hash` truncates to 500 chars so growing the body
+        rarely changes it, which would otherwise keep serving the old short
+        translation from the cache."""
+        with self._tx() as conn:
+            conn.execute("DELETE FROM job_translations WHERE job_id = ?", (job_id,))
+
     def save_translation(
         self,
         job_id: str,
@@ -608,6 +647,89 @@ class Database:
 
     def hidden_ids(self) -> set[str]:
         return {r[0] for r in self._conn.execute("SELECT job_id FROM job_hidden")}
+
+    # -- on-demand detail fetch record ------------------------------------
+
+    def get_detail_fetch(self, job_id: str) -> dict | None:
+        """The recorded outcome of the last on-demand full-posting fetch for a
+        job, or None if it has never been fetched from the dashboard."""
+        row = self._conn.execute(
+            """
+            SELECT fetched_at, link_status, apply_url, alternate_links, description_len
+            FROM job_detail_fetch WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "fetched_at": row["fetched_at"],
+            "link_status": row["link_status"],
+            "apply_url": row["apply_url"],
+            "alternate_links": json.loads(row["alternate_links"] or "[]"),
+            "description_len": row["description_len"],
+        }
+
+    def save_detail_fetch(
+        self,
+        job_id: str,
+        *,
+        link_status: str,
+        apply_url: str | None,
+        alternate_links: list[str] | None = None,
+        description_len: int = 0,
+        when: datetime | None = None,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO job_detail_fetch
+                    (job_id, fetched_at, link_status, apply_url, alternate_links, description_len)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    fetched_at      = excluded.fetched_at,
+                    link_status     = excluded.link_status,
+                    apply_url       = excluded.apply_url,
+                    alternate_links = excluded.alternate_links,
+                    description_len = excluded.description_len
+                """,
+                (
+                    job_id,
+                    _dt(when or datetime.now(UTC)),
+                    link_status,
+                    apply_url,
+                    json.dumps(alternate_links or []),
+                    description_len,
+                ),
+            )
+
+    # -- config overlay (Settings UI) -------------------------------------
+
+    def get_config_overlay(self) -> dict[str, str]:
+        """Every key/value the Settings UI has written. Applied over `.env`/env
+        in `service.get_config()`; the only writable config path in Docker."""
+        return {
+            r["key"]: r["value"]
+            for r in self._conn.execute("SELECT key, value FROM app_config")
+        }
+
+    def set_config_overlay(self, values: dict[str, str], when: datetime | None = None) -> None:
+        """Upsert overlay keys. An empty string value clears the key, so the UI
+        can revert to whatever `.env`/env provides."""
+        stamp = _dt(when or datetime.now(UTC))
+        with self._tx() as conn:
+            for key, value in values.items():
+                if value == "":
+                    conn.execute("DELETE FROM app_config WHERE key = ?", (key,))
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO app_config (key, value, updated_at) VALUES (?,?,?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                       updated_at = excluded.updated_at
+                        """,
+                        (key, value, stamp),
+                    )
 
     def record_run(self, started_at: datetime, finished_at: datetime, summary_json: str) -> None:
         with self._tx() as conn:
