@@ -386,7 +386,18 @@ class SourceConfig(BaseModel):
     empty/None means the top level is already the list."""
     field_map: dict[str, str] = Field(default_factory=dict)
     """Maps `JobCandidate` field -> dotted path in each JSON item. At minimum map
-    `title` and `url`. See `sources/research_sources.py`."""
+    `title`, and either `url` or `item_url_template`. See
+    `sources/research_sources.py`."""
+    item_url_template: str | None = None
+    """Build each posting's URL from its mapped fields when the JSON has no direct
+    link, e.g. "https://www.arbeitsagentur.de/jobsuche/jobdetail/{source_job_id}".
+    `{field}` placeholders are filled from `field_map` values, URL-encoded."""
+    headers: dict[str, str] = Field(default_factory=dict)
+    """Extra request headers, e.g. a public API key
+    (`X-API-Key: jobboerse-jobsuche`). For real secrets use `.env`, not this."""
+    # `queries` (above) doubles as json_api query terms: when `url` contains a
+    # `{query}` placeholder, the source fetches it once per query with the term
+    # URL-encoded in, and merges the results.
 
     allowed_domains: list[str] = Field(default_factory=list)
     """Hosts a search result must be on to be kept. Empty means no restriction.

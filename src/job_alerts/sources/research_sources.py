@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from ..models import JobCandidate, SearchQuery
 from .base import BaseSource
@@ -113,16 +114,38 @@ class JsonApiSource(BaseSource):
         url = self.config.url
         if not url:
             raise ValueError(f"source {self.name!r} has type 'json_api' but no url")
-        if not self.config.field_map:
+        fmap = self.config.field_map
+        if "title" not in fmap:
+            raise ValueError(f"source {self.name!r} field_map is missing 'title'")
+        if "url" not in fmap and not self.config.item_url_template:
             raise ValueError(
-                f"source {self.name!r} has no field_map; at minimum map 'title' and 'url'"
+                f"source {self.name!r} needs either 'url' in field_map or an item_url_template"
             )
-        for required in ("title", "url"):
-            if required not in self.config.field_map:
-                raise ValueError(f"source {self.name!r} field_map is missing {required!r}")
 
-        payload = await self.client.get_json(url)
-        return self.parse(payload)
+        # One request per query term when `url` has a `{query}` placeholder,
+        # otherwise a single request. Results are merged and de-duplicated by url.
+        headers = self.config.headers or None
+        urls = self._request_urls(url)
+        seen: set[str] = set()
+        candidates: list[JobCandidate] = []
+        for request_url in urls:
+            try:
+                payload = await self.client.get_json(request_url, headers=headers)
+            except Exception as exc:
+                logger.warning("source %s: request failed (%s): %s", self.name, request_url, exc)
+                continue
+            for candidate in self.parse(payload):
+                if candidate.url in seen:
+                    continue
+                seen.add(candidate.url)
+                candidates.append(candidate)
+        return candidates
+
+    def _request_urls(self, url: str) -> list[str]:
+        if "{query}" not in url:
+            return [url]
+        queries = self.config.queries or [""]
+        return [url.replace("{query}", quote(q)) for q in queries]
 
     def parse(self, payload: Any) -> list[JobCandidate]:
         items = resolve_path(payload, self.config.items_path or "")
@@ -160,10 +183,25 @@ class JsonApiSource(BaseSource):
             if field in _CANDIDATE_FIELDS:
                 values[field] = _stringify(resolve_path(item, path))
 
+        # Build the URL from a template when the JSON has no direct link — e.g.
+        # an id-only API where the posting lives at .../jobdetail/{refnr}.
+        if not values.get("url") and self.config.item_url_template:
+            values["url"] = self._build_url(values)
+
         if not values.get("title") or not values.get("url"):
             return None
         try:
             return JobCandidate(source=self.name, **values)
         except ValueError as exc:
             logger.debug("source %s: invalid item: %s", self.name, exc)
+            return None
+
+    def _build_url(self, values: dict[str, Any]) -> str | None:
+        """Fill an `item_url_template` from the mapped values, URL-encoding each
+        substituted field. Returns None if a referenced field is missing."""
+        try:
+            return self.config.item_url_template.format_map(
+                {k: quote(str(v), safe="") for k, v in values.items() if v is not None}
+            )
+        except (KeyError, IndexError):
             return None

@@ -29,8 +29,11 @@ Tick items as they land. Last updated: 2026-07-17.
 
 ## ⏭️ Next up (from the plan roadmap)
 ### Phase 2 — broader coverage
-- [ ] Wire a real academic source (EURAXESS has no clean JSON API; use an institute HTML source
-      or another JSON board) — connector is ready, just needs a live endpoint.
+- [x] **Real academic source wired** — Bundesagentur für Arbeit public Jobsuche JSON API
+      (`arbeitsagentur`, enabled), queried for academic terms; covers universities, Fraunhofer,
+      MPG, Helmholtz, uni hospitals. Enhanced the `json_api` connector: `item_url_template`
+      (build URLs from `refnr`), `headers` (public API key), and `{query}` multi-query fetch.
+      Verified live via `check-source`. (EURAXESS stays a disabled reference — no clean JSON API.)
 - [ ] University-domain discovery expansion; department/lab/institute connectors
 - [ ] Source-health monitoring; de-Germanization (config-driven country/timezone/language)
 

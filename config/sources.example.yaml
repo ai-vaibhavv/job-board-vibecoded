@@ -273,6 +273,39 @@ sources:
       contact_email: "contact.email"
 
   # -------------------------------------------------------------------------
+  # Bundesagentur für Arbeit — the German Federal Employment Agency's public
+  # Jobsuche API (JSON). A government, non-commercial board that universities,
+  # Fraunhofer, Max Planck, Helmholtz etc. all post to. We query it ONLY for
+  # academic-role terms and let the academic-relevance gate drop the rest — it is
+  # a discovery source for university/institute openings, not a generic job feed.
+  #
+  # status: VERIFIED (live JSON, no auth beyond the public static X-API-Key;
+  #         item URLs are built from `refnr` via item_url_template).
+  # `{query}` in the url is filled once per entry in `queries`, URL-encoded.
+  - name: arbeitsagentur
+    type: json_api
+    enabled: true
+    url: "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs?was={query}&size=25&angebotsart=1"
+    items_path: "stellenangebote"
+    item_url_template: "https://www.arbeitsagentur.de/jobsuche/jobdetail/{source_job_id}"
+    headers:
+      X-API-Key: "jobboerse-jobsuche"
+    queries:
+      - "wissenschaftliche Hilfskraft"
+      - "studentische Hilfskraft"
+      - "Forschungspraktikum"
+      - "Doktorand Forschung"
+    field_map:
+      source_job_id: "refnr"
+      title: "titel"
+      organization: "arbeitgeber"
+      location: "arbeitsort.ort"
+      country: "arbeitsort.land"
+      published_at: "aktuelleVeroeffentlichungsdatum"
+    defaults:
+      country: "Germany"
+
+  # -------------------------------------------------------------------------
   # Search-engine discovery. This is the compliant route to LinkedIn: it finds
   # public job URLs via a search API and stores the links. It NEVER logs in to
   # LinkedIn and never scrapes authenticated pages.
