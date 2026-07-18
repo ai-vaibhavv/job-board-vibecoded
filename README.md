@@ -1,158 +1,146 @@
-# LabScout
+<p align="center">
+  <img src="logos/wordmark.png" alt="LabScout" width="420">
+</p>
 
-**Discover. Match. Research.** LabScout finds **university, lab and
-research-institute opportunities** — HiWi, student / research / teaching assistant,
-research internships, Bachelor/Master thesis, and PhD positions — **Germany-first,
-in German and English** — scores each one, and either sends the good ones to Discord
-or lets you browse and publish them from a web dashboard. A single instance can run
-broad across all academic fields, or load the `core_ai` profile preset to stay narrow
-(e.g. an AI/ML/CV/NLP/robotics-only view). Runs entirely on your own machine.
+<p align="center"><strong>Discover. Match. Research.</strong></p>
 
-> The Python package keeps its historical name `job_alerts` for stability; the
-> product is **LabScout**.
+LabScout finds **university, lab and research-institute opportunities** — HiWi,
+student / research / teaching assistant, research internships, Bachelor/Master
+thesis, and PhD positions — **Germany-first, in German and English**. On each run
+it searches every enabled source, scores each result 0–100, deduplicates against
+history, stores everything in a local SQLite database, and either sends the good
+ones to Discord or lets you browse and hand-pick them from a **React dashboard**.
+It runs entirely on your own machine.
 
-```
-🎓 3 new research positions in Germany
+> The Python package keeps its historical name `job_alerts`; the product is **LabScout**.
 
-┌─ STUDENTISCHE HILFSKRAFT im Bereich Softwareentwicklung für Simulationen
-│  🏛️ Fraunhofer FKIE   📍 Wachtberg   ⭐ 55/100   🔎 fraunhofer
-└─ Open job →
-```
+---
 
-## What it does
+## 🤖 This project is vibe-coded — and that's the whole point
 
-On each run it searches every enabled source concurrently, normalizes the
-results into one `Job` model, filters and scores them 0–100 (keywords **or** a
-self-hosted LLM judge), deduplicates against history, stores everything in
-SQLite, and sends **only new, relevant** jobs to Discord — marking them notified
-only after Discord confirms delivery. A run summary is printed at the end.
+**Every line of this project was written by prompting an AI coding agent, not by
+hand. That is a hard rule, not a preference.**
 
-- **Two ways to use it**: a headless CLI/scheduler, or a **React dashboard**
-  (FastAPI + Vite) for browsing, translating, searching and hand-picking what to
-  publish.
-- **German → English**: the dashboard translates German postings on demand (via
-  the LLM) and Discord always receives the English version.
-- **Explainable scoring**: every score carries a stored, human-readable reason.
-- **Compliant by design** (see below).
+If you contribute, you must do the same: describe what you want to an AI coding
+assistant and let it write the code. **No hand-written patches.** The goal of
+LabScout is to be an end-to-end, real-world app built purely through vibe-coding
+— so keeping every contribution vibe-coded is what the project is *for*.
 
-## Compliance
+Bug reports, feature ideas, and issues are welcome from everyone. Pull requests
+are welcome too — as long as the code in them was produced by vibe-coding.
 
-- **Never logs in to LinkedIn.** LinkedIn is covered only as a *discovery-link*
-  source: a legitimate search API is asked for public `…/jobs/view/…` URLs; the
-  app never contacts `linkedin.com` itself. Thinner metadata is the honest trade.
-- `robots.txt` is respected, requests are rate-limited per domain, and every
-  request carries a real User-Agent (**set your contact info in `settings.yaml`**).
-- No browser automation. `academics.de` ships `forbidden: true` and is hard-blocked.
+<p align="center">
+  <img src="logos/opensource.gif" alt="Open source" width="480">
+</p>
+
+### Good first contributions
+
+- **Fix the UI** — polish the dashboard, improve responsiveness, dark mode, accessibility.
+- **Fix bugs** — see the issue tracker, or anything you hit while running it.
+- **Improve latency** — faster source fetching, smarter caching, leaner LLM prompts.
+- **Add a source** — a new RSS/HTML/JSON provider under `src/job_alerts/sources/`.
+- **Improve scoring/filtering** — better keyword rules or LLM prompts.
+- **Docs & tests** — clearer setup, more coverage.
+
+---
 
 ## Quick start
 
+Requires **Python ≥ 3.12** and **Node.js ≥ 18** (for the dashboard).
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[api]"                # omit [api] for CLI-only
+pip install -e ".[api]"                 # omit [api] for CLI-only
 
-cp .env.example .env                    # add DISCORD_WEBHOOK_URL
+cp .env.example .env                     # then edit — see "Configuration" below
 cp config/settings.example.yaml config/settings.yaml
 cp config/sources.example.yaml config/sources.yaml
 
-python -m job_alerts search --dry-run   # safe first run, sends nothing
-python -m job_alerts send-test          # check the Discord webhook
-python -m job_alerts search             # real run
+python -m job_alerts search --dry-run    # safe first run, sends nothing
+python -m job_alerts send-test           # check the Discord webhook
+python -m job_alerts search              # real run
 ```
 
-Secrets (webhook, API keys) live only in `.env`; everything else is in
-`config/*.yaml`. A search API key is optional — without it the app still runs on
-RSS/HTML sources. An optional self-hosted OpenAI-compatible LLM
-(`llm.colab_base_url`) sharpens filtering and powers translation; without it the
-keyword scorer is used.
+**Dashboard (dev, hot-reload):**
+
+```bash
+python -m job_alerts serve                    # JSON API on http://127.0.0.1:7860
+cd frontend && npm install && npm run dev     # UI on http://localhost:5173
+```
+
+**Docker (one container serves SPA + API):**
+
+```bash
+docker compose up                             # dashboard on http://localhost:7860
+docker compose --profile scheduler up -d      # also run scheduled searches
+```
+
+---
+
+## Configuration
+
+Copy the three example files above, then set your own values. **Secrets live only
+in `.env`** (gitignored); everything else is plain config in `config/*.yaml`.
+
+### `.env` — secrets
+
+| Variable | Required? | What to set |
+|---|---|---|
+| `DISCORD_WEBHOOK_URL` | **Required** | Your Discord webhook (Server Settings → Integrations → Webhooks). Not needed for `--dry-run`. |
+| `SEARCH_API_PROVIDER` + `SEARCH_API_KEY` | Optional | Search-engine discovery (`tavily`, `brave`, `bing`, `google_cse`, `serpapi`). Without it, RSS/HTML sources still work. |
+| `GOOGLE_CSE_ID` | Optional | Only when `SEARCH_API_PROVIDER=google_cse`. |
+| `COLAB_API_KEY` | Optional | Bearer token for a self-hosted LLM endpoint. Usually blank. |
+| `APIFY_TOKEN` | Optional | Enables the LinkedIn-posts source; without it that source skips itself. |
+| `JOB_ALERTS_API_AUTH` | Optional | `user:pass` — require HTTP Basic auth on the dashboard's write endpoints. **Set this before exposing the API beyond localhost.** |
+
+### `config/settings.yaml` — non-secret config
+
+| Setting | What to set |
+|---|---|
+| `http.user_agent` | **Put your own contact info here** (used on every outbound request). |
+| `llm.colab_base_url` | Optional. URL of a self-hosted, OpenAI-compatible LLM. Empty = keyword scorer only (translation disabled). See `docs/colab-model.md`. |
+
+---
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `search [--dry-run]` | Run one full search now |
-| `serve` | Launch the JSON API for the React dashboard (see below) |
+| `serve` | Launch the JSON API for the dashboard |
 | `send-test` | Test the Discord webhook |
 | `list [--new] [--min-score N] [--explain]` | List stored jobs |
 | `stats` | Database statistics |
-| `run-scheduler` | Stay running; search on a schedule (08:00 / 18:00) |
+| `run-scheduler` | Stay running; search on a schedule |
 | `export --format csv\|json` | Export stored jobs |
 | `check-source <name>` | Fetch one source and show what it parsed |
 | `show-config` | Effective config, secrets masked |
-
-## Dashboard
-
-A **React** SPA (Vite + TypeScript + Tailwind) over a thin **FastAPI** JSON layer.
-A two-pane job board: filters, a scrollable list of job cards, and a detail panel.
-
-```bash
-python -m job_alerts serve              # JSON API on http://127.0.0.1:7860
-cd frontend && npm install && npm run dev   # UI on http://localhost:5173 (proxies /api)
-```
-
-- **Browse & filter** all stored jobs; click a card for the full posting.
-- **German jobs** show an English translation first (cached after the first
-  open), original German collapsible below.
-- **Publish per job** to Discord, in English — publishing a filtered-out or
-  already-sent job asks for confirmation.
-- **Search** turns keywords / topics / an uploaded resume into live queries and
-  runs the pipeline as a **background task** (poll for progress), **storing only**
-  (nothing auto-sent). "Hide" declutters your view without deleting.
-- **No LLM startup gate**: browsing works immediately; only translation and new
-  searches need the tunnel, and they degrade gracefully when it is down.
-- Set `JOB_ALERTS_API_AUTH=user:pass` to require HTTP Basic on the write
-  endpoints (publish / run-search / resume) before exposing the API beyond
-  localhost.
-
-## Docker
-
-**One container, one command.** The image builds the React SPA and FastAPI serves
-it alongside `/api` from a single process — no separate frontend server. The
-dashboard is at http://localhost:7860. Config is mounted live (editing
-`llm.colab_base_url` is picked up without a restart); the database persists in a
-named volume.
-
-```bash
-docker compose up                          # dashboard on http://localhost:7860
-docker compose --profile scheduler up -d   # also run scheduled searches
-docker compose run --rm app send-test
-```
-
-> Local development still runs the API and Vite dev server separately (above) for
-> hot-reload; Docker bundles them into the one image.
-
-## How it works
-
-`pipeline.py` runs the sequence search → normalize → filter → score → dedupe →
-store → notify. **Identity** is `source:source_job_id`, or a stable hash of the
-normalized URL/title/org/location; a `UNIQUE` index on the normalized URL
-collapses the same posting arriving from two sources. **Delivery is safe**: jobs
-are stored *before* Discord and marked notified only *after* a 2xx, so an outage
-loses nothing. The **PhD nuance rule** means "PhD students welcome" never rejects
-a HiWi role — only a stated requirement ("abgeschlossene Promotion") does.
-
-Layout: `config.py` (pydantic settings), `models.py`, `database.py` (SQLite +
-additive migrations), `filtering.py` / `scoring.py`, `llm/` (prompt + providers +
-translation), `sources/` (rss, html, search_api, linkedin_posts), `dashboard/`
-(Gradio-free service layer reused by the API), `api/` (FastAPI JSON layer),
-`frontend/` (React SPA), `notifications/discord.py`.
 
 ## Development
 
 ```bash
 pip install -e ".[dev,api]"
-pytest          # offline Python test suite
+pytest                       # offline Python test suite
 ruff check src tests
-
-cd frontend && npm install
-npm run build   # typecheck (tsc) + production build
+cd frontend && npm install && npm run build   # typecheck + production build
 ```
+
+## How it works
+
+`pipeline.py` runs: search → normalize → filter → score → dedupe → store →
+notify. Jobs are stored *before* Discord and marked notified only *after* a 2xx,
+so an outage loses nothing. LinkedIn is used as a discovery-link source only —
+the app never logs in or contacts `linkedin.com` itself. `robots.txt` is
+respected and requests are rate-limited per domain.
+
+Layout: `config.py`, `models.py`, `database.py` (SQLite), `filtering.py` /
+`scoring.py`, `llm/`, `sources/`, `api/` (FastAPI), `frontend/` (React SPA),
+`notifications/discord.py`.
 
 ## Privacy
 
 All data stays on your machine (`data/jobs.db`) — no telemetry. Secrets live only
-in gitignored `.env`; logs are scrubbed of webhooks, keys and cookies. Outbound
-traffic goes only to the sources you enable, your search/LLM endpoints, and
-`discord.com`.
+in gitignored `.env`; logs are scrubbed of webhooks, keys and cookies.
 
 ## License
 
